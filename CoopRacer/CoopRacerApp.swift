@@ -1,9 +1,3 @@
-//
-//  CoopRacerApp.swift
-//  CoopRacer
-//
-//  Created by Ashutosh Bhardwaj on 2025-09-12.
-//
 
 import SwiftUI
 
