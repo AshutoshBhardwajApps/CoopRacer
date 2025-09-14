@@ -4,7 +4,8 @@ import SwiftUI
 struct CoopRacerApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            HomeView()          // ⬅️ start at the menu
+                .preferredColorScheme(.dark)
         }
     }
 }

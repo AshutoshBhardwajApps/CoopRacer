@@ -4,14 +4,12 @@ import AVFoundation
 @MainActor
 final class CountdownSounder: NSObject {
     private var player: AVAudioPlayer?
-    private var lastTick: Int = 4  // start above 3 so we beep at 3 first
 
-    func maybePlay(for secondsRemaining: Double) {
-        let current = Int(ceil(max(0, secondsRemaining)))   // 3,2,1,0
-        guard current != lastTick else { return }
-        lastTick = current
+    /// Play once for a discrete tick value (3, 2, 1, 0). 0 corresponds to the "START" visual.
+    func playTickNumber(_ tick: Int) {
+        guard (0...3).contains(tick) else { return }
 
-        // Stop any in-flight tick so we don't overlap
+        // Stop any in-flight playback so ticks never overlap
         player?.stop()
         player = nil
 
@@ -23,7 +21,7 @@ final class CountdownSounder: NSObject {
             p.play()
             player = p
 
-            // Safety: force short blip even if the file is long
+            // Safety: trim long files to a short blip
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
                 self?.player?.stop()
                 self?.player = nil
@@ -37,6 +35,4 @@ final class CountdownSounder: NSObject {
         player?.stop()
         player = nil
     }
-
-    func reset() { lastTick = 4 }
 }

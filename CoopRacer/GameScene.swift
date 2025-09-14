@@ -9,8 +9,8 @@ final class GameScene: SKScene {
     private weak var coordinator: GameCoordinator?
 
     // Visual
-    private let roadNode = SKShapeNode()
-    private let carNode = SKNode()
+    private var roadNode = SKShapeNode()
+    private var carNode = SKNode()
     private var startLine: SKShapeNode!
     private var finishLine: SKShapeNode!
 
@@ -52,6 +52,9 @@ final class GameScene: SKScene {
     private var isRecovering = false
     private var slowVignette: SKShapeNode?
 
+    // Pause tracking (so we only fade once)
+    private var wasPaused: Bool = false
+
     // Audio
     private var engineNode: SKAudioNode?
 
@@ -84,7 +87,7 @@ final class GameScene: SKScene {
         )
 
         // Road (grey so wheels pop)
-        roadNode.path = CGPath(roundedRect: playableRect, cornerWidth: 10, cornerHeight: 10, transform: nil)
+        roadNode = SKShapeNode(rect: playableRect, cornerRadius: 10)
         roadNode.fillColor = SKColor(white: 0.18, alpha: 1.0)
         roadNode.strokeColor = SKColor(white: 1.0, alpha: 0.15)
         roadNode.lineWidth = 2
@@ -97,8 +100,23 @@ final class GameScene: SKScene {
         // Start / Finish (high z so always visible)
         buildCheckeredLines()
 
-        // Car (simple top-down)
-        buildCar()
+        // Car (procedural top-down)
+        let accent: SKColor = {
+            if (Side.left == side) {
+                #if canImport(UIKit)
+                return (Theme.p1SK ?? .red)
+                #else
+                return .red
+                #endif
+            } else {
+                #if canImport(UIKit)
+                return (Theme.p2SK ?? .blue)
+                #else
+                return .blue
+                #endif
+            }
+        }()
+        carNode = makeCar(color: accent)
         let carY: CGFloat = (side == .left)
             ? playableRect.minY + playableRect.height * 0.18
             : playableRect.maxY - playableRect.height * 0.18
@@ -139,14 +157,66 @@ final class GameScene: SKScene {
         speedMultiplier = 1
         dashPhase = 0
         layoutDashes() // initial placement
+        wasPaused = false
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
         if view != nil { didMove(to: view!) }
     }
 
+    // MARK: - Car builder (procedural top-down car, no assets)
+    private func makeCar(color: SKColor) -> SKNode {
+        let car = SKNode()
+
+        // Body
+        let body = SKShapeNode(rectOf: CGSize(width: 30, height: 50), cornerRadius: 6)
+        body.fillColor = color
+        body.strokeColor = .black
+        body.lineWidth = 1.5
+        body.zPosition = 30
+        car.addChild(body)
+
+        // Wheels
+        let wheelSize = CGSize(width: 8, height: 14)
+        let wheelOffsets: [(CGFloat, CGFloat)] = [(-14, -16), (14, -16), (-14, 16), (14, 16)]
+        for (dx, dy) in wheelOffsets {
+            let wheel = SKShapeNode(rectOf: wheelSize, cornerRadius: 2)
+            wheel.fillColor = SKColor(white: 0.08, alpha: 1.0)
+            wheel.strokeColor = .black
+            wheel.lineWidth = 1
+            wheel.position = CGPoint(x: dx, y: dy)
+            wheel.zPosition = 31
+            car.addChild(wheel)
+        }
+
+        // Windshield (forward)
+        let windshield = SKShapeNode(rectOf: CGSize(width: 20, height: 10), cornerRadius: 2)
+        windshield.fillColor = SKColor(cgColor: CGColor(red: 0.75, green: 0.9, blue: 1.0, alpha: 0.9))
+        windshield.strokeColor = .clear
+        windshield.position = CGPoint(x: 0, y: 12)
+        windshield.zPosition = 32
+        car.addChild(windshield)
+
+        // Rear lights
+        func tail(_ x: CGFloat) -> SKShapeNode {
+            let t = SKShapeNode(circleOfRadius: 2.5)
+            t.fillColor = .red
+            t.strokeColor = .clear
+            t.position = CGPoint(x: x, y: -22)
+            t.zPosition = 32
+            return t
+        }
+        car.addChild(tail(-8))
+        car.addChild(tail(+8))
+
+        return car
+    }
+
     // MARK: - Builders
     private func buildDashes() {
+        dashNodes.forEach { $0.removeFromParent() }
+        dashNodes.removeAll()
+
         for _ in 0..<dashCount {
             let path = CGMutablePath()
             path.move(to: .zero); path.addLine(to: CGPoint(x: 0, y: dashLen))
@@ -159,22 +229,27 @@ final class GameScene: SKScene {
         }
     }
 
+    // Position dashes using a phase that mirrors per side
     private func layoutDashes() {
         for (i, dash) in dashNodes.enumerated() {
-            let baseOffset = CGFloat(i) * dashSpacing + dashPhase
-            let yStart: CGFloat
-            let yEnd: CGFloat
+            let base = CGFloat(i) * dashSpacing
+
+            let p = CGMutablePath()
             if side == .left {
-                yStart = playableRect.minY + baseOffset - dashLen
-                yEnd   = yStart + dashLen
+                // RED (bottom): dashes should visually move DOWN as time passes
+                let yStart = playableRect.minY + base - dashPhase
+                let yEnd   = yStart + dashLen
+                p.move(to: CGPoint(x: playableRect.midX, y: yStart))
+                p.addLine(to: CGPoint(x: playableRect.midX, y: yEnd))
             } else {
-                yStart = playableRect.maxY - baseOffset + dashLen
-                yEnd   = yStart - dashLen
+                // BLUE (top): mirrored — dashes should visually move UP as time passes
+                let yStart = playableRect.maxY - base + dashPhase
+                let yEnd   = yStart - dashLen
+                p.move(to: CGPoint(x: playableRect.midX, y: yStart))
+                p.addLine(to: CGPoint(x: playableRect.midX, y: yEnd))
             }
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: playableRect.midX, y: yStart))
-            path.addLine(to: CGPoint(x: playableRect.midX, y: yEnd))
-            dash.path = path
+
+            dash.path = p
         }
     }
 
@@ -204,37 +279,6 @@ final class GameScene: SKScene {
         finishLine = checkered(width: playableRect.width * 0.8, height: 18)
         addChild(startLine)
         addChild(finishLine)
-    }
-
-    private func buildCar() {
-        let accent: SKColor = (side == .left) ? Theme.p1SK : Theme.p2SK
-
-        // Body
-        let body = SKShapeNode(rectOf: CGSize(width: 26, height: 44), cornerRadius: 9)
-        body.fillColor = accent
-        body.strokeColor = .clear
-        body.zPosition = 30
-
-        // Wheels (dark so they pop on grey)
-        func wheel(_ x: CGFloat, _ y: CGFloat) -> SKShapeNode {
-            let w = SKShapeNode(rectOf: CGSize(width: 6, height: 12), cornerRadius: 3)
-            w.fillColor = SKColor(white: 0.05, alpha: 1.0)
-            w.strokeColor = .clear
-            w.position = CGPoint(x: x, y: y)
-            w.zPosition = 31
-            return w
-        }
-        let wheels = [wheel(-10, 12), wheel(10, 12), wheel(-10, -12), wheel(10, -12)]
-
-        // Windshield (forward)
-        let wsRect = CGRect(x: -9, y: 8, width: 18, height: 10)
-        let wsPath = CGPath(roundedRect: wsRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
-        let windshield = SKShapeNode(path: wsPath)
-        windshield.fillColor = .white.withAlphaComponent(0.85)
-        windshield.strokeColor = .clear
-        windshield.zPosition = 32
-
-        carNode.addChild(body); wheels.forEach { carNode.addChild($0) }; carNode.addChild(windshield)
     }
 
     private func addProgressBar() {
@@ -267,7 +311,7 @@ final class GameScene: SKScene {
         let y: CGFloat = (side == .left) ? baseY : baseY + (totalH - filledH)
         let fillRect = CGRect(x: xOffset - barWidth/2, y: y, width: barWidth, height: filledH)
         progressFill.path = CGPath(roundedRect: fillRect, cornerWidth: 4, cornerHeight: 4, transform: nil)
-        progressFill.fillColor = (side == .left) ? Theme.p1SK : Theme.p2SK
+        progressFill.fillColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
         progressFill.strokeColor = .clear
     }
 
@@ -337,29 +381,42 @@ final class GameScene: SKScene {
         let dt = currentTime - lastUpdate
         lastUpdate = currentTime
 
-        // Lateral steering always allowed (pre-aim during countdown)
+        // ==== 1) Global Pause handling (must be first) ====
+        if coordinator?.isPaused == true {
+            if !wasPaused {
+                stopEngineLoop()   // fade/stop engine once on entering pause
+                wasPaused = true
+            }
+            return                 // freeze scene updates while paused
+        } else if wasPaused {
+            // Just resumed
+            startEngineLoop()
+            wasPaused = false
+        }
+
+        // ==== 2) Allow lateral steering even before race starts ====
         applyLateralMovement(dt: dt)
 
-        // If race hasn't started, do not move world elements
+        // ==== 3) If race hasn't started, stop here (no scrolling yet) ====
         guard coordinator?.raceStarted == true else { return }
 
-        // If round is over, ensure engine fades/stops and bail early
+        // ==== 4) If round is over, stop engine and stop updating ====
         if coordinator?.roundActive == false {
             stopEngineLoop()
             return
         }
 
-        // Scrolling toward each player
+        // ==== 5) World scrolling / gameplay ====
         let dir: CGFloat = (side == .left) ? -1.0 : +1.0
         let speed = baseSpeed * speedMultiplier
         let dy = dir * speed * CGFloat(dt)
 
-        // Advance distance & progress bar
+        // Distance & progress
         distanceAdvanced += abs(dy)
         let ratio = min(distanceAdvanced / totalTrackDistance, 1.0)
         updateProgressFill(ratio: ratio)
 
-        // Center dashed line via PHASE (bulletproof)
+        // Center dashed line via PHASE (use a single positive phase; mirror in layout)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
         layoutDashes()
 
@@ -386,7 +443,7 @@ final class GameScene: SKScene {
         for ob in obstacles {
             ob.position.y += dy
 
-            // Collision (mark touched, apply smooth penalty, play sound)
+            // Collision (mark touched, apply penalty, play sound)
             let dx = abs(ob.position.x - carNode.position.x)
             let dyC = abs(ob.position.y - carNode.position.y)
             var touched = (ob.userData?["touched"] as? Bool) ?? false
@@ -491,7 +548,6 @@ final class GameScene: SKScene {
 
     // MARK: - Sounds
     private func startEngineLoop() {
-        // Optional: add engine_loop_p1.mp3 / engine_loop_p2.mp3 (or .wav) to your bundle
         let name = (side == .left) ? "engine_loop_p1" : "engine_loop_p2"
         if Bundle.main.url(forResource: name, withExtension: "mp3") != nil {
             let engine = SKAudioNode(fileNamed: "\(name).mp3")
