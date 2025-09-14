@@ -68,18 +68,27 @@ final class GameScene: SKScene {
             height: size.height - marginTowardBottom - marginTowardTop
         )
 
-        // Road (grey so wheels pop)
+        // Road
         roadNode.path = CGPath(roundedRect: playableRect, cornerWidth: 10, cornerHeight: 10, transform: nil)
         roadNode.fillColor = SKColor(white: 0.18, alpha: 1.0)
         roadNode.strokeColor = SKColor(white: 1.0, alpha: 0.15)
         roadNode.lineWidth = 2
+        roadNode.zPosition = 5
         addChild(roadNode)
 
-        // Center dashed line
-        addDashes(count: 16, spacing: 80, dashLen: 40)
+        // Dashes (below start/finish, above road)
+        addDashes(count: 22, spacing: 64, dashLen: 36) // denser → smoother; z set inside addDashes()
 
-        // Start / Finish
+        // Start / Finish (very high z so always visible)
         addCheckeredLines()
+        startLine.zPosition = 100
+        finishLine.zPosition = 100
+
+        // Start line should sit just inside the player’s edge
+        startLine.position = CGPoint(
+            x: playableRect.midX,
+            y: (side == .left) ? (playableRect.minY + 24) : (playableRect.maxY - 24)
+        )
 
         // Car
         buildCar()
@@ -119,6 +128,7 @@ final class GameScene: SKScene {
 
     // MARK: - Builders
     private func addDashes(count: Int, spacing: CGFloat, dashLen: CGFloat) {
+        dashNodes.removeAll(keepingCapacity: true)
         for i in 0..<count {
             let y = (side == .left)
                 ? playableRect.minY + CGFloat(i) * spacing
@@ -130,12 +140,12 @@ final class GameScene: SKScene {
             let dash = SKShapeNode(path: path)
             dash.strokeColor = .white
             dash.lineWidth = 2
+            dash.zPosition = 15      // above road, below start/finish
             dash.name = "dash"
             addChild(dash)
             dashNodes.append(dash)
         }
     }
-
     private func checkered(width: CGFloat, height: CGFloat) -> SKShapeNode {
         let node = SKShapeNode(rectOf: CGSize(width: width, height: height), cornerRadius: 2)
         node.fillColor = .clear
