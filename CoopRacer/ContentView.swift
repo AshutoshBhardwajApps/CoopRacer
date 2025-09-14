@@ -1,22 +1,20 @@
 import SwiftUI
 import SpriteKit
-import AVFoundation
 
 struct ContentView: View {
     @StateObject private var input = PlayerInput()
     @StateObject private var coordinator = GameCoordinator()
 
+    // Plain helper for countdown ticks
+    private let sounder = CountdownSounder()
+
     @State private var pulse = false
     @State private var winnerPulse = false
-
-    // Countdown sound
-    @State private var lastWholeCount: Int = 4   // forces sound at first display
-    @State private var player: AVAudioPlayer?
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // Game views
+                // ===== Game views (split screen) =====
                 HStack(spacing: 0) {
                     SpriteView(scene: makeScene(side: .left,
                                                 size: CGSize(width: geo.size.width/2,
@@ -51,12 +49,15 @@ struct ContentView: View {
                             pulse = true
                         }
                     }
-                    .onChange(of: coordinator.startCountdown) { _ in
-                        playCountdownIfNeeded()
+                    .onChange(of: coordinator.startCountdown) { secs in
+                        // Play ticks only before the race starts
+                        if !coordinator.raceStarted {
+                            sounder.maybePlay(for: secs)
+                        }
                     }
                 }
 
-                // ===== Winner flash overlay (post-round, pre-results) =====
+                // ===== Winner flash (post-round, pre-results) =====
                 if !coordinator.roundActive && coordinator.raceStarted && !coordinator.showResults {
                     winnerFlashOverlay(size: geo.size, winner: coordinator.winner)
                         .onAppear {
@@ -66,7 +67,7 @@ struct ContentView: View {
                         }
                 }
             }
-            // Bottom controls: P1
+            // ===== Bottom controls: Player 1 =====
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 6) {
                     Text("PLAYER 1").font(.caption).bold().foregroundColor(Theme.p1)
@@ -79,7 +80,7 @@ struct ContentView: View {
                 .padding(.bottom, 6)
                 .background(Color.black)
             }
-            // Top controls: P2
+            // ===== Top controls: Player 2 (mirrored text) =====
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 6) {
                     Text("PLAYER 2")
@@ -94,11 +95,11 @@ struct ContentView: View {
                 .padding(.top, 6)
                 .background(Color.black)
             }
-            // Results sheet
+            // ===== Results sheet =====
             .sheet(isPresented: $coordinator.showResults, onDismiss: {
                 pulse = false
                 winnerPulse = false
-                lastWholeCount = 4
+                sounder.reset()
                 coordinator.startRound()
             }) {
                 VStack(spacing: 20) {
@@ -113,11 +114,13 @@ struct ContentView: View {
                             Text("Player 2").foregroundStyle(Theme.p2).bold()
                             Text("\(coordinator.p2Score)").font(.title)
                         }
-                    }.padding(.horizontal, 32)
+                    }
+                    .padding(.horizontal, 32)
+
                     Button("Play Again") {
                         pulse = false
                         winnerPulse = false
-                        lastWholeCount = 4
+                        sounder.reset()
                         coordinator.startRound()
                     }
                     .buttonStyle(.borderedProminent)
@@ -127,35 +130,17 @@ struct ContentView: View {
                 .presentationDetents([.medium])
             }
             .onAppear {
-                lastWholeCount = 4
+                sounder.reset()
                 coordinator.startRound()
+            }
+            // Stop any lingering countdown tick right when the race starts
+            .onChange(of: coordinator.raceStarted) { started in
+                if started { sounder.stop() }
             }
         }
     }
 
-    private func playCountdownIfNeeded() {
-        // Play on each new integer boundary, and once more at START
-        let current = Int(ceil(max(0, coordinator.startCountdown))) // 3..0
-        if current != lastWholeCount {
-            lastWholeCount = current
-            playTick()
-        } else if current == 0 && !coordinator.raceStarted {
-            // Edge case: in case we miss the transition, ensure a tick at START
-            playTick()
-        }
-    }
-
-    private func playTick() {
-        guard let url = Bundle.main.url(forResource: "race_countdown1", withExtension: "mp3") else { return }
-        do {
-            player = try AVAudioPlayer(contentsOf: url)
-            player?.prepareToPlay()
-            player?.play()
-        } catch {
-            // Silently ignore if missing / unplayable
-        }
-    }
-
+    // Winner flash overlay (soft translucent bars on the winning half)
     private func winnerFlashOverlay(size: CGSize, winner: Int?) -> some View {
         ZStack {
             if winner == 0 {
