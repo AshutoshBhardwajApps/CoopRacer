@@ -1,19 +1,19 @@
-import Foundation
 import AVFoundation
 
 @MainActor
-final class CountdownSounder: NSObject {
+final class CountdownSounder {
     private var player: AVAudioPlayer?
 
-    /// Play once for a discrete tick value (3, 2, 1, 0). 0 corresponds to the "START" visual.
-    func playTickNumber(_ tick: Int) {
-        guard (0...3).contains(tick) else { return }
+    /// Short blip for 3/2/1.
+    func playTick(blipLength: TimeInterval = 0.18) {
+        guard let url =
+            Bundle.main.url(forResource: "race_countdown_tick", withExtension: "mp3")
+            ?? Bundle.main.url(forResource: "race_countdown1", withExtension: "mp3")
+        else { return }
 
-        // Stop any in-flight playback so ticks never overlap
-        player?.stop()
-        player = nil
+        // Stop any in-flight audio so ticks don’t overlap.
+        stop()
 
-        guard let url = Bundle.main.url(forResource: "race_countdown1", withExtension: "mp3") else { return }
         do {
             let p = try AVAudioPlayer(contentsOf: url)
             p.prepareToPlay()
@@ -21,14 +21,45 @@ final class CountdownSounder: NSObject {
             p.play()
             player = p
 
-            // Safety: trim long files to a short blip
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                self?.player?.stop()
-                self?.player = nil
+            // Hard stop after the blip so it never lingers.
+            DispatchQueue.main.asyncAfter(deadline: .now() + blipLength) { [weak self] in
+                guard let self = self, self.player === p else { return }
+                self.player?.stop()
+                self.player = nil
             }
-        } catch {
-            // ignore
-        }
+        } catch { /* ignore */ }
+    }
+
+    /// Play only the tail of the countdown file at GO (default 0.5s).
+    func playGoTail(tail: TimeInterval = 0.5) {
+        // Prefer a dedicated GO file if present; otherwise take the tail of countdown1.
+        guard let url =
+            Bundle.main.url(forResource: "race_go", withExtension: "mp3")
+            ?? Bundle.main.url(forResource: "race_countdown1", withExtension: "mp3")
+        else { return }
+
+        // Ensure no tick is still playing.
+        stop()
+
+        do {
+            let p = try AVAudioPlayer(contentsOf: url)
+            p.prepareToPlay()
+            p.numberOfLoops = 0
+
+            // Jump to the last `tail` seconds (clamped to start ≥ 0).
+            let start = max(0, p.duration - tail)
+            p.currentTime = start
+            p.play()
+            player = p
+
+            // Stop right after the tail to avoid lingering ambience.
+            let guardTime = min(tail + 0.05, p.duration)
+            DispatchQueue.main.asyncAfter(deadline: .now() + guardTime) { [weak self] in
+                guard let self = self, self.player === p else { return }
+                self.player?.stop()
+                self.player = nil
+            }
+        } catch { /* ignore */ }
     }
 
     func stop() {

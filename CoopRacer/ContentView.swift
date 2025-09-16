@@ -5,24 +5,28 @@ import SpriteKit
 
 struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
     @StateObject private var input = PlayerInput()
-    @StateObject private var coordinator = GameCoordinator()   // must be the updated one with isPaused + startTick
+    @StateObject private var coordinator = GameCoordinator()   // must include isPaused + startTick
 
     private let sounder = CountdownSounder()
 
+    // UI state
     @State private var pulse = false
     @State private var winnerPulse = false
     @State private var showPause = false
     @State private var confirmHome = false
 
-    // Keep references to scenes so we can pause/resume them
+    // Scenes we control (so we can truly pause & reset)
     @State private var leftScene: GameScene?
     @State private var rightScene: GameScene?
+    @State private var lastGeoSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // ===== Game views (split; stateful scenes) =====
+                // ===== Game views (two SpriteKit scenes) =====
                 HStack(spacing: 0) {
                     SpriteView(scene: leftScene ?? SKScene())
                     SpriteView(scene: rightScene ?? SKScene())
@@ -30,23 +34,22 @@ struct ContentView: View {
                 .background(Color.black)
                 .ignoresSafeArea()
                 .onAppear {
-                    // Create scenes on first layout
+                    lastGeoSize = geo.size
                     if leftScene == nil || rightScene == nil {
-                        leftScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                              side: .left, input: input, coordinator: coordinator)
-                        rightScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                               side: .right, input: input, coordinator: coordinator)
+                        createScenes(for: geo.size)
                     }
+                    // Fresh round from the very beginning + play the "3" tick
+                    resetRound(playTick3: true, recreateScenes: false)
                 }
                 .onChange(of: geo.size) { newSize in
-                    // Recreate scenes if size changes significantly
-                    leftScene = GameScene(size: CGSize(width: newSize.width/2, height: newSize.height),
-                                          side: .left, input: input, coordinator: coordinator)
-                    rightScene = GameScene(size: CGSize(width: newSize.width/2, height: newSize.height),
-                                           side: .right, input: input, coordinator: coordinator)
+                    // Rebuild scenes only on meaningful size changes (avoid pause-sheet jitter)
+                    let dx = abs(newSize.width - lastGeoSize.width)
+                    let dy = abs(newSize.height - lastGeoSize.height)
+                    guard dx > 20 || dy > 20 else { return }
+                    createScenes(for: newSize)
                 }
 
-                // ===== Pre-start countdown: 3,2,1, START (discrete) =====
+                // ===== Pre-start countdown overlay =====
                 CountdownOverlay(startTick: coordinator.startTick,
                                  raceStarted: coordinator.raceStarted,
                                  pulse: $pulse)
@@ -56,12 +59,9 @@ struct ContentView: View {
                     WinnerFlashOverlay(winner: coordinator.winner, winnerPulse: $winnerPulse)
                 }
 
-                // ===== Pause buttons (mirrored, thumb-friendly) =====
+                // ===== Pause buttons (mirrored, thumb-friendly, compact) =====
                 PauseButtons {
-                    coordinator.isPaused = true
-                    leftScene?.isPaused = true
-                    rightScene?.isPaused = true
-                    showPause = true
+                    showPause = true // onChange(showPause) will actually pause everything
                 }
             }
             // ===== Bottom controls: Player 1 =====
@@ -79,44 +79,23 @@ struct ContentView: View {
                                        right: $input.p2Right)
             }
             // ===== Results sheet =====
-            .sheet(isPresented: $coordinator.showResults, onDismiss: {
-                pulse = false
-                winnerPulse = false
-                coordinator.startRound()
-                // Recreate scenes for a clean new round
-                leftScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                      side: .left, input: input, coordinator: coordinator)
-                rightScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                       side: .right, input: input, coordinator: coordinator)
-            }) {
+            .sheet(isPresented: $coordinator.showResults) {
                 ResultsSheet(coordinator: coordinator) {
                     pulse = false
                     winnerPulse = false
-                    coordinator.startRound()
-                    leftScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                          side: .left, input: input, coordinator: coordinator)
-                    rightScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                           side: .right, input: input, coordinator: coordinator)
+                    // Full reset from the beginning, recreate scenes for a clean slate
+                    resetRound(playTick3: true, recreateScenes: true)
                 }
             }
-            // ===== Pause sheet (actually pauses timers + scenes) =====
+            // ===== Pause sheet (pausing is driven by showPause state) =====
             .sheet(isPresented: $showPause) {
                 PauseSheet(
                     resume: {
-                        coordinator.isPaused = false
-                        leftScene?.isPaused = false
-                        rightScene?.isPaused = false
-                        showPause = false
+                        showPause = false           // onChange(showPause) resumes all
                     },
                     restart: {
-                        showPause = false
-                        coordinator.isPaused = false
-                        coordinator.startRound()
-                        // Recreate scenes so everything resets visually
-                        leftScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                              side: .left, input: input, coordinator: coordinator)
-                        rightScene = GameScene(size: CGSize(width: geo.size.width/2, height: geo.size.height),
-                                               side: .right, input: input, coordinator: coordinator)
+                        showPause = false           // resume first (cleans audio), then reset
+                        resetRound(playTick3: true, recreateScenes: true)
                     },
                     goHome: {
                         confirmHome = true
@@ -125,28 +104,90 @@ struct ContentView: View {
                 .confirmationDialog("Leave the game?", isPresented: $confirmHome, titleVisibility: .visible) {
                     Button("Leave and go to Home", role: .destructive) {
                         showPause = false
-                        coordinator.isPaused = false
-                        dismiss() // pop back to HomeView
+                        resumeAll()
+                        dismiss()
                     }
                     Button("Cancel", role: .cancel) { }
                 } message: {
                     Text("Progress for the current round will be lost.")
                 }
             }
-            .onAppear {
-                coordinator.startRound()
-            }
-            // Play countdown tick ONLY when the discrete integer changes (3,2,1,0)
+
+            // ===== Countdown sounds =====
             .onChange(of: coordinator.startTick) { tick in
-                if !coordinator.raceStarted { sounder.playTickNumber(tick) }
-                if tick == 0 { sounder.stop() }
+                // We trigger the "3" tick explicitly when a round starts; only blip for 2 and 1 here.
+                if tick == 2 || tick == 1 {
+                    sounder.playTick(blipLength: 0.18)
+                }
             }
-            // Also stop any lingering tick when the race actually flips to started
             .onChange(of: coordinator.raceStarted) { started in
-                if started { sounder.stop() }
+                if started {
+                    sounder.playGoTail(tail: 0.5) // last ~0.5s GO tail
+                } else {
+                    sounder.stop()
+                }
+            }
+
+            // ===== Pause/resume tied to sheet & app lifecycle =====
+            .onChange(of: showPause) { presented in
+                if presented {
+                    pauseAll()
+                } else {
+                    // Only resume if results aren’t being shown
+                    if !coordinator.showResults { resumeAll() }
+                }
+            }
+            .onChange(of: scenePhase) { phase in
+                if phase != .active {
+                    pauseAll()
+                    showPause = true // surface the pause UI so both players see it's paused
+                } else if !showPause && !coordinator.showResults {
+                    resumeAll()
+                }
             }
         }
-        .navigationBarBackButtonHidden(true) // Home is available from Pause
+        .navigationBarBackButtonHidden(true)
+    }
+
+    // MARK: - Pause/Resume helpers
+
+    private func pauseAll() {
+        coordinator.isPaused = true
+        leftScene?.isPaused = true
+        rightScene?.isPaused = true
+    }
+
+    private func resumeAll() {
+        coordinator.isPaused = false
+        leftScene?.isPaused = false
+        rightScene?.isPaused = false
+    }
+
+    // MARK: - Round reset & scenes
+
+    /// Clean round reset:
+    /// - unpauses,
+    /// - restarts the coordinator,
+    /// - recreates scenes if requested (clears obstacles, lines, progress),
+    /// - optionally plays the "3" tick right away.
+    private func resetRound(playTick3: Bool, recreateScenes: Bool) {
+        resumeAll()
+        coordinator.startRound()
+        if recreateScenes {
+            let size = (lastGeoSize == .zero) ? UIScreen.main.bounds.size : lastGeoSize
+            createScenes(for: size)
+        }
+        if playTick3 {
+            sounder.playTick(blipLength: 0.18) // beep exactly when "3" first appears
+        }
+    }
+
+    private func createScenes(for size: CGSize) {
+        lastGeoSize = size
+        leftScene = GameScene(size: CGSize(width: size.width/2, height: size.height),
+                              side: .left, input: input, coordinator: coordinator)
+        rightScene = GameScene(size: CGSize(width: size.width/2, height: size.height),
+                               side: .right, input: input, coordinator: coordinator)
     }
 }
 
@@ -355,6 +396,7 @@ private struct PauseSheet: View {
 
 // MARK: - Reusable UI bits
 
+/// Compact pause chip so it won’t encroach on roads.
 private struct PauseCircle: View {
     var label: String
     var body: some View {
@@ -365,7 +407,7 @@ private struct PauseCircle: View {
                 .font(.subheadline.bold())
         }
         .padding(.horizontal, 10)
-        .frame(height: 32) // ⬅️ smaller height (was 48)
+        .frame(height: 32) // compact (was 48)
         .background(.ultraThinMaterial)
         .foregroundStyle(.white)
         .clipShape(Capsule(style: .continuous))
