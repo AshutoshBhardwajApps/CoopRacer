@@ -16,122 +16,110 @@ struct ContentView: View {
     @State private var pulse = false
     @State private var winnerPulse = false
     @State private var showPause = false
-    @State private var confirmHome = false   // legacy, no longer used inside sheet
-    @State private var askHome = false       // root-level confirm dialog
+    @State private var confirmHome = false
 
-    // Scenes we control (so we can truly pause & reset)
+    // Scenes
     @State private var leftScene: GameScene?
     @State private var rightScene: GameScene?
     @State private var lastGeoSize: CGSize = .zero
 
-    // Ad + navigation coordination
-    @State private var adShowing = false
-    @State private var pendingRestart = false
-    @State private var navigatingHome = false
+    // Ad coordination
+    @State private var didTryAdAfterResults = false
 
     var body: some View {
         GeometryReader { geo in
-            ZStack {
-                GameBoard(leftScene: leftScene, rightScene: rightScene)
-                    .background(Color.black)
-                    .ignoresSafeArea()
-                    .onAppear {
-                        lastGeoSize = geo.size
-                        if leftScene == nil || rightScene == nil {
-                            createScenes(for: geo.size)
-                        }
-                        // Prime audio and start a fresh round + play the "3" tick
-                        startRoundNow()
-                        // Background music for race screen
-                        BGM.shared.play(volume: 0.20)
-                    }
-                    // iOS 17 onChange (two-parameter: old, new)
-                    .onChange(of: geo.size) { _, newSize in
-                        // Rebuild scenes only on meaningful size changes (avoid sheet jitter)
-                        let dx = abs(newSize.width - lastGeoSize.width)
-                        let dy = abs(newSize.height - lastGeoSize.height)
-                        guard dx > 20 || dy > 20 else { return }
-                        createScenes(for: newSize)
-                    }
+            content(geo: geo)
+        }
+        .background(AdPresenter()) // invisible presenter VC for interstitials
+        .navigationBarBackButtonHidden(true)
 
-                // Countdown overlay
-                CountdownOverlay(startTick: coordinator.startTick,
-                                 raceStarted: coordinator.raceStarted,
-                                 pulse: $pulse)
-                    .allowsHitTesting(false)
+        // Keep BGM + game state in sync with interstitials
+       
+        .onReceive(NotificationCenter.default.publisher(for: .adWillPresent)) { _ in
+            pauseAll()
+            BGM.shared.setVolume(0.0, fadeDuration: 0.15)   // <- hard mute
+        }
 
-                // Winner flash
-                let showWinner = (!coordinator.roundActive && coordinator.raceStarted && !coordinator.showResults)
-                if showWinner {
-                    WinnerFlashOverlay(winner: coordinator.winner, winnerPulse: $winnerPulse)
-                        .allowsHitTesting(false)
-                }
+        .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
+            if !coordinator.showResults && !showPause { resumeAll() }
+            BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // <- restore
+            AdManager.shared.preload()
+        }
+        // Clear any lingering flags when HomeView appears
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("CoopRacer.ResetNavFlag"))) { _ in
+            showPause = false
+            confirmHome = false
+            didTryAdAfterResults = false
+        }
+    }
 
-                // Pause buttons
-                PauseButtons { showPause = true }
-                    .padding(.horizontal, 20)
-            }
-            // Stable UIKit presenter for ads
-            .background(AdPresenter())
+    // MARK: - Split body (keeps the compiler happy)
+    @ViewBuilder
+    private func content(geo: GeometryProxy) -> some View {
+        ZStack {
+            GameArea(geo: geo)
 
-            // Listen for ad show/hide -> pause/resume cleanly
-            .onReceive(NotificationCenter.default.publisher(for: .adWillPresent)) { _ in
-                adShowing = true
-                pauseAll()
-                BGM.shared.pause(fade: 0.25)   // ✅ fully pause the music
-            }
+            CountdownOverlay(startTick: coordinator.startTick,
+                             raceStarted: coordinator.raceStarted,
+                             pulse: $pulse)
+                .allowsHitTesting(false)
 
-            .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
-                adShowing = false
+            WinnerLayer(coordinator: coordinator, winnerPulse: $winnerPulse)
+                .allowsHitTesting(false)
 
-                if pendingRestart {
-                    startRoundNow()
-                    pendingRestart = false
-                } else if !showPause && !coordinator.showResults {
-                    resumeAll()
-                }
-                BGM.shared.resume(fade: 0.25, to: 0.20)   // ✅ resume at your normal level
-            }
-
-            // Results sheet
-            .sheet(isPresented: $coordinator.showResults, onDismiss: {
-                AdManager.shared.presentIfAllowed { shown in
-                    if shown {
-                        pendingRestart = true
-                    } else {
-                        startRoundNow()
-                    }
-                }
-            }) {
-                ResultsSheet(coordinator: coordinator) {
-                    coordinator.showResults = false
+            PauseButtons { showPause = true }
+                .padding(.horizontal, 20)
+        }
+        // Player 1 controls (bottom)
+        .safeAreaInset(edge: .bottom) {
+            PlayerControls(title: "PLAYER 1",
+                           color: Theme.p1,
+                           left: $input.p1Left,
+                           right: $input.p1Right)
+        }
+        // Player 2 controls (top, mirrored)
+        .safeAreaInset(edge: .top) {
+            PlayerControlsMirrored(title: "PLAYER 2",
+                                   color: Theme.p2,
+                                   left: $input.p2Left,
+                                   right: $input.p2Right)
+        }
+        // Results sheet
+        .sheet(isPresented: $coordinator.showResults, onDismiss: {
+            // Attempt interstitial only once after the sheet is fully gone
+            if !didTryAdAfterResults {
+                didTryAdAfterResults = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    AdManager.shared.presentIfAllowed()
                 }
             }
-
-            // Pause sheet
-            .sheet(isPresented: $showPause) {
-                PauseSheet(
-                    resume: { showPause = false },
-                    restart: {
-                        showPause = false
-                        startRoundNow()
-                    },
-                    requestHome: {
-                        // Dismiss pause first, then show confirm dialog at root
-                        showPause = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            askHome = true
-                        }
-                    }
-                )
+        }) {
+            ResultsSheet(coordinator: coordinator) {
+                pulse = false
+                winnerPulse = false
+                resetRound(playTick3: true, recreateScenes: true)
             }
-
-            // Root-level confirmation dialog
+            .onAppear {
+                AdManager.shared.noteRoundCompleted()
+                AdManager.shared.preload()
+                didTryAdAfterResults = false
+            }
+        }
+        // Pause sheet
+        .sheet(isPresented: $showPause) {
+            PauseSheet(
+                resume: { showPause = false },
+                restart: {
+                    showPause = false
+                    resetRound(playTick3: true, recreateScenes: true)
+                },
+                goHome: { confirmHome = true }
+            )
             .confirmationDialog("Leave the game?",
-                                isPresented: $askHome,
+                                isPresented: $confirmHome,
                                 titleVisibility: .visible) {
                 Button("Leave and go to Home", role: .destructive) {
-                    navigatingHome = true
+                    showPause = false
                     resumeAll()
                     dismiss()
                 }
@@ -139,73 +127,66 @@ struct ContentView: View {
             } message: {
                 Text("Progress for the current round will be lost.")
             }
-
-            // Countdown sounds
-            .onChange(of: coordinator.startTick) { _, tick in
-                if tick == 2 || tick == 1 {
-                    if !adShowing {
-                        sounder.playTick(blipLength: 0.18)
-                    }
-                }
-            }
-            // iOS 17 zero-parameter form: just react to the change and read current value
-            .onChange(of: coordinator.raceStarted) {
-                if coordinator.raceStarted {
-                    leftScene?.onRaceStarted()
-                    rightScene?.onRaceStarted()
-                    sounder.playGoTail(tail: 0.5)
-                } else {
-                    leftScene?.onRaceEnded()
-                    rightScene?.onRaceEnded()
-                    sounder.stop()
-                }
-            }
-
-            // Pause/resume tied to sheet (two-parameter)
-            .onChange(of: showPause) { _, presented in
-                if presented {
-                    pauseAll()
-                    BGM.shared.setVolume(0.12, fadeDuration: 0.25)
-                } else if !coordinator.showResults && !adShowing {
-                    resumeAll()
-                    BGM.shared.setVolume(0.20, fadeDuration: 0.25)
-                }
-            }
-
-            // Lifecycle: avoid auto-pause during ads or home nav (two-parameter)
-            .onChange(of: scenePhase) { _, phase in
-                if adShowing || navigatingHome { return }
-                if phase != .active {
-                    pauseAll()
-                    BGM.shared.setVolume(0.12, fadeDuration: 0.25)
-                    showPause = true
-                } else if !showPause && !coordinator.showResults {
-                    resumeAll()
-                    BGM.shared.setVolume(0.20, fadeDuration: 0.25)
-                }
+        }
+        // Countdown sounds
+        .onChange(of: coordinator.startTick) { tick in
+            if tick == 3 || tick == 2 || tick == 1 {
+                sounder.playTick(blipLength: 0.18)
             }
         }
-        .navigationBarBackButtonHidden(true)
-        .onDisappear {
-            navigatingHome = false
+        .onChange(of: coordinator.raceStarted) { started in
+            if started {
+                // (Box-car GameScene has no engine hooks; we just do the GO tail.)
+                sounder.playGoTail(tail: 0.5)
+            } else {
+                sounder.stop()
+            }
         }
-        // Bottom controls (P1)
-        .safeAreaInset(edge: .bottom) {
-            PlayerControls(title: "PLAYER 1",
-                           color: Theme.p1,
-                           left: $input.p1Left,
-                           right: $input.p1Right)
+        // Pause/resume tied to sheet & lifecycle
+        .onChange(of: showPause) { presented in
+            if presented {
+                pauseAll(); BGM.shared.setVolume(0.12, fadeDuration: 0.25)
+            } else if !coordinator.showResults {
+                resumeAll(); BGM.shared.setVolume(0.20, fadeDuration: 0.25)
+            }
         }
-        // Top controls (P2 mirrored)
-        .safeAreaInset(edge: .top) {
-            PlayerControlsMirrored(title: "PLAYER 2",
-                                   color: Theme.p2,
-                                   left: $input.p2Left,
-                                   right: $input.p2Right)
+        .onChange(of: scenePhase) { phase in
+            if phase != .active {
+                pauseAll()
+                BGM.shared.setVolume(0.12, fadeDuration: 0.25)
+                showPause = true
+            } else if !showPause && !coordinator.showResults {
+                resumeAll()
+                BGM.shared.setVolume(0.20, fadeDuration: 0.25)
+            }
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Sub-blocks
+
+    @ViewBuilder
+    private func GameArea(geo: GeometryProxy) -> some View {
+        GameBoard(leftScene: leftScene, rightScene: rightScene)
+            .background(Color.black)
+            .ignoresSafeArea()
+            .onAppear {
+                lastGeoSize = geo.size
+                if leftScene == nil || rightScene == nil {
+                    createScenes(for: geo.size)
+                }
+                resetRound(playTick3: true, recreateScenes: false)
+                BGM.shared.play(volume: 0.20)
+            }
+            .onChange(of: geo.size) { newSize in
+                // Rebuild scenes only on meaningful size changes
+                let dx = abs(newSize.width - lastGeoSize.width)
+                let dy = abs(newSize.height - lastGeoSize.height)
+                guard dx > 20 || dy > 20 else { return }
+                createScenes(for: newSize)
+            }
+    }
+
+    // MARK: - Pause/Resume
 
     private func pauseAll() {
         coordinator.isPaused = true
@@ -219,28 +200,29 @@ struct ContentView: View {
         rightScene?.isPaused = false
     }
 
-    private func startRoundNow() {
-        pulse = false
-        winnerPulse = false
+    // MARK: - Reset & Scenes
+
+    private func resetRound(playTick3: Bool, recreateScenes: Bool) {
         resumeAll()
         coordinator.startRound()
-        sounder.playTick(blipLength: 0.18) // the "3"
-        if leftScene == nil || rightScene == nil {
+        if recreateScenes {
             let size = (lastGeoSize == .zero) ? UIScreen.main.bounds.size : lastGeoSize
             createScenes(for: size)
+        }
+        if playTick3 {
+            sounder.playTick(blipLength: 0.18)
         }
     }
 
     private func createScenes(for size: CGSize) {
         lastGeoSize = size
-        leftScene = GameScene(size: CGSize(width: size.width/2, height: size.height),
-                              side: .left, input: input, coordinator: coordinator)
-        rightScene = GameScene(size: CGSize(width: size.width/2, height: size.height),
-                               side: .right, input: input, coordinator: coordinator)
+        let half = CGSize(width: size.width / 2, height: size.height)
+        leftScene  = GameScene(size: half, side: .left,  input: input, coordinator: coordinator)
+        rightScene = GameScene(size: half, side: .right, input: input, coordinator: coordinator)
     }
 }
 
-// MARK: - Subviews
+// MARK: - Small reusable views
 
 private struct GameBoard: View {
     let leftScene: SKScene?
@@ -257,6 +239,7 @@ private struct CountdownOverlay: View {
     let startTick: Int
     let raceStarted: Bool
     @Binding var pulse: Bool
+
     var body: some View {
         Group {
             if !raceStarted {
@@ -285,28 +268,36 @@ private struct CountdownOverlay: View {
     }
 }
 
-private struct WinnerFlashOverlay: View {
-    let winner: Int?
+private struct WinnerLayer: View {
+    @ObservedObject var coordinator: GameCoordinator
     @Binding var winnerPulse: Bool
+
     var body: some View {
-        ZStack {
-            if winner == 0 {
-                HStack(spacing: 0) {
-                    Rectangle().fill(Theme.p1.opacity(winnerPulse ? 0.25 : 0.4))
-                    Rectangle().fill(Theme.p2.opacity(winnerPulse ? 0.25 : 0.4))
+        let winner = coordinator.winner
+        let show = (!coordinator.roundActive && coordinator.raceStarted && !coordinator.showResults)
+
+        return Group {
+            if show {
+                ZStack {
+                    if winner == 0 {
+                        HStack(spacing: 0) {
+                            Rectangle().fill(Theme.p1.opacity(winnerPulse ? 0.25 : 0.4))
+                            Rectangle().fill(Theme.p2.opacity(winnerPulse ? 0.25 : 0.4))
+                        }
+                    } else {
+                        HStack(spacing: 0) {
+                            Rectangle().fill((winner == 1 ? Theme.p1 : .clear).opacity(winnerPulse ? 0.25 : 0.4))
+                            Rectangle().fill((winner == 2 ? Theme.p2 : .clear).opacity(winnerPulse ? 0.25 : 0.4))
+                        }
+                    }
                 }
-            } else {
-                HStack(spacing: 0) {
-                    Rectangle().fill((winner == 1 ? Theme.p1 : .clear).opacity(winnerPulse ? 0.25 : 0.4))
-                    Rectangle().fill((winner == 2 ? Theme.p2 : .clear).opacity(winnerPulse ? 0.25 : 0.4))
+                .ignoresSafeArea()
+                .transition(.opacity)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 0.5).repeatCount(2, autoreverses: true)) {
+                        winnerPulse = true
+                    }
                 }
-            }
-        }
-        .ignoresSafeArea()
-        .transition(.opacity)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.5).repeatCount(2, autoreverses: true)) {
-                winnerPulse = true
             }
         }
     }
@@ -325,11 +316,30 @@ private struct PauseButtons: View {
     }
 }
 
+private struct PauseChip: View {
+    var label: String
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "pause.fill").font(.subheadline.bold())
+            Text(label).font(.subheadline.bold())
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(.ultraThinMaterial)
+        .foregroundStyle(.white)
+        .clipShape(Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.25), lineWidth: 1))
+        .shadow(color: .black.opacity(0.4), radius: 4, y: 2)
+        .contentShape(Rectangle())
+    }
+}
+
 private struct PlayerControls: View {
     var title: String
     var color: Color
     @Binding var left: Bool
     @Binding var right: Bool
+
     var body: some View {
         VStack(spacing: 6) {
             Text(title).font(.caption).bold().foregroundColor(color)
@@ -349,6 +359,7 @@ private struct PlayerControlsMirrored: View {
     var color: Color
     @Binding var left: Bool
     @Binding var right: Bool
+
     var body: some View {
         VStack(spacing: 6) {
             Text(title).font(.caption).bold().foregroundColor(color).rotationEffect(.degrees(180))
@@ -363,25 +374,12 @@ private struct PlayerControlsMirrored: View {
     }
 }
 
-private struct PauseChip: View {
-    var label: String
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "pause.fill").font(.subheadline.bold())
-            Text(label).font(.subheadline.bold())
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 32)
-        .background(.ultraThinMaterial)
-        .foregroundStyle(.white)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
-    }
-}
+// MARK: - Sheets (bundled so you won’t get “not in scope”)
 
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
     var playAgain: () -> Void
+
     var body: some View {
         VStack(spacing: 20) {
             Text("Round Over").font(.largeTitle).bold()
@@ -397,32 +395,32 @@ private struct ResultsSheet: View {
                 }
             }
             .padding(.horizontal, 32)
-            Button("Play Again") { playAgain() }
+
+            Button("Play Again", action: playAgain)
                 .buttonStyle(.borderedProminent)
                 .padding(.top, 12)
         }
         .padding(24)
         .presentationDetents([.medium])
-        .onAppear {
-            AdManager.shared.noteRoundCompleted()
-            AdManager.shared.preload()
-        }
     }
 }
 
 private struct PauseSheet: View {
     var resume: () -> Void
     var restart: () -> Void
-    var requestHome: () -> Void
+    var goHome: () -> Void
+
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Paused").font(.title).bold().padding(.top, 8)
-            Button("Resume", action: resume).buttonStyle(.borderedProminent)
-            Button("Restart Round", action: restart).buttonStyle(.bordered)
-            Button("Leave and go Home", role: .destructive, action: requestHome).buttonStyle(.bordered)
-            Spacer(minLength: 8)
+        NavigationStack {
+            List {
+                Section {
+                    Button("Resume", action: resume)
+                    Button("Restart Round", action: restart)
+                    Button("Leave and go to Home", role: .destructive, action: goHome)
+                }
+            }
+            .navigationTitle("Paused")
         }
-        .padding(24)
         .presentationDetents([.medium])
     }
 }
