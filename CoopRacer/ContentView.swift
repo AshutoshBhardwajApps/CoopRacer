@@ -1,14 +1,23 @@
 import SwiftUI
 import SpriteKit
 
-// MARK: - ContentView
+// MARK: - ContentView (thin wrapper to keep the type checker happy)
 
 struct ContentView: View {
+    var body: some View {
+        GameRootView()
+            .navigationBarBackButtonHidden(true)
+    }
+}
+
+// MARK: - GameRootView (holds state and logic)
+
+private struct GameRootView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
     @StateObject private var input = PlayerInput()
-    @StateObject private var coordinator = GameCoordinator()   // must include isPaused + startTick
+    @StateObject private var coordinator = GameCoordinator()
 
     private let sounder = CountdownSounder()
 
@@ -26,80 +35,65 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // ===== Game views (two SpriteKit scenes) =====
-                HStack(spacing: 0) {
-                    SpriteView(scene: leftScene ?? SKScene())
-                    SpriteView(scene: rightScene ?? SKScene())
-                }
-                .background(Color.black)
-                .ignoresSafeArea()
-                .onAppear {
-                    lastGeoSize = geo.size
-                    if leftScene == nil || rightScene == nil {
-                        createScenes(for: geo.size)
+                // --- Game area (split into its own view) ---
+                GameBoard(leftScene: leftScene, rightScene: rightScene)
+                    .background(Color.black)
+                    .ignoresSafeArea()
+                    .onAppear { onFirstAppear(geo.size) }
+                    .onChange(of: geo.size) { newSize in
+                        let dx = abs(newSize.width - lastGeoSize.width)
+                        let dy = abs(newSize.height - lastGeoSize.height)
+                        guard dx > 20 || dy > 20 else { return }
+                        createScenes(for: newSize)
                     }
-                    // Fresh round from the very beginning + play the "3" tick
-                    resetRound(playTick3: true, recreateScenes: false)
-                }
-                .onChange(of: geo.size) { newSize in
-                    // Rebuild scenes only on meaningful size changes (avoid pause-sheet jitter)
-                    let dx = abs(newSize.width - lastGeoSize.width)
-                    let dy = abs(newSize.height - lastGeoSize.height)
-                    guard dx > 20 || dy > 20 else { return }
-                    createScenes(for: newSize)
-                }
 
-                // ===== Pre-start countdown overlay =====
+                // Countdown overlay
                 CountdownOverlay(startTick: coordinator.startTick,
                                  raceStarted: coordinator.raceStarted,
                                  pulse: $pulse)
+                    .allowsHitTesting(false)
 
-                // ===== Winner flash (post-round, pre-results) =====
+                // Winner flash (inline condition—no local let)
                 if !coordinator.roundActive && coordinator.raceStarted && !coordinator.showResults {
                     WinnerFlashOverlay(winner: coordinator.winner, winnerPulse: $winnerPulse)
+                        .allowsHitTesting(false)
                 }
 
-                // ===== Pause buttons (mirrored, thumb-friendly, compact) =====
-                PauseButtons {
-                    showPause = true // onChange(showPause) will actually pause everything
-                }
+                // Pause buttons (mirrored)
+                PauseButtons { showPause = true }
+                    .padding(.horizontal, 20)
             }
-            // ===== Bottom controls: Player 1 =====
+            // Player 1 controls (bottom)
             .safeAreaInset(edge: .bottom) {
                 PlayerControls(title: "PLAYER 1",
                                color: Theme.p1,
                                left: $input.p1Left,
                                right: $input.p1Right)
             }
-            // ===== Top controls: Player 2 (mirrored) =====
+            // Player 2 controls (top, mirrored)
             .safeAreaInset(edge: .top) {
                 PlayerControlsMirrored(title: "PLAYER 2",
                                        color: Theme.p2,
                                        left: $input.p2Left,
                                        right: $input.p2Right)
             }
-            // ===== Results sheet =====
+            // Results sheet (now defined below in this same file)
             .sheet(isPresented: $coordinator.showResults) {
                 ResultsSheet(coordinator: coordinator) {
                     pulse = false
                     winnerPulse = false
-                    // Full reset from the beginning, recreate scenes for a clean slate
                     resetRound(playTick3: true, recreateScenes: true)
                 }
             }
-            // ===== Pause sheet (pausing is driven by showPause state) =====
+            // Pause sheet (now defined below)
             .sheet(isPresented: $showPause) {
                 PauseSheet(
-                    resume: {
-                        showPause = false           // onChange(showPause) resumes all
-                    },
+                    resume: { showPause = false },
                     restart: {
-                        showPause = false           // resume first (cleans audio), then reset
+                        showPause = false
                         resetRound(playTick3: true, recreateScenes: true)
                     },
-                    goHome: {
-                        confirmHome = true
-                    }
+                    goHome: { confirmHome = true }
                 )
                 .confirmationDialog("Leave the game?", isPresented: $confirmHome, titleVisibility: .visible) {
                     Button("Leave and go to Home", role: .destructive) {
@@ -112,44 +106,55 @@ struct ContentView: View {
                     Text("Progress for the current round will be lost.")
                 }
             }
-
-            // ===== Countdown sounds =====
+            // Countdown sounds
             .onChange(of: coordinator.startTick) { tick in
-                // We trigger the "3" tick explicitly when a round starts; only blip for 2 and 1 here.
+                // We play the "3" at round start; only blip for 2 and 1 here.
                 if tick == 2 || tick == 1 {
                     sounder.playTick(blipLength: 0.18)
                 }
             }
             .onChange(of: coordinator.raceStarted) { started in
                 if started {
-                    sounder.playGoTail(tail: 0.5) // last ~0.5s GO tail
+                    sounder.playGoTail(tail: 0.5)
                 } else {
                     sounder.stop()
                 }
             }
-
-            // ===== Pause/resume tied to sheet & app lifecycle =====
+            // Pause/resume tied to sheet & lifecycle (also ducks/unducks BGM)
             .onChange(of: showPause) { presented in
                 if presented {
                     pauseAll()
-                } else {
-                    // Only resume if results aren’t being shown
-                    if !coordinator.showResults { resumeAll() }
+                    BGM.shared.setVolume(0.12, fadeDuration: 0.25)
+                } else if !coordinator.showResults {
+                    resumeAll()
+                    BGM.shared.setVolume(0.20, fadeDuration: 0.25)
                 }
             }
             .onChange(of: scenePhase) { phase in
                 if phase != .active {
                     pauseAll()
-                    showPause = true // surface the pause UI so both players see it's paused
+                    BGM.shared.setVolume(0.12, fadeDuration: 0.25)
+                    showPause = true
                 } else if !showPause && !coordinator.showResults {
                     resumeAll()
+                    BGM.shared.setVolume(0.20, fadeDuration: 0.25)
                 }
             }
         }
-        .navigationBarBackButtonHidden(true)
     }
 
-    // MARK: - Pause/Resume helpers
+    // MARK: - First appear setup (kept out of body to help the type checker)
+
+    private func onFirstAppear(_ size: CGSize) {
+        lastGeoSize = size
+        if leftScene == nil || rightScene == nil {
+            createScenes(for: size)
+        }
+        resetRound(playTick3: true, recreateScenes: false)
+        BGM.shared.play(volume: 0.20)
+    }
+
+    // MARK: - Pause/Resume
 
     private func pauseAll() {
         coordinator.isPaused = true
@@ -163,13 +168,8 @@ struct ContentView: View {
         rightScene?.isPaused = false
     }
 
-    // MARK: - Round reset & scenes
+    // MARK: - Reset & Scenes
 
-    /// Clean round reset:
-    /// - unpauses,
-    /// - restarts the coordinator,
-    /// - recreates scenes if requested (clears obstacles, lines, progress),
-    /// - optionally plays the "3" tick right away.
     private func resetRound(playTick3: Bool, recreateScenes: Bool) {
         resumeAll()
         coordinator.startRound()
@@ -178,7 +178,8 @@ struct ContentView: View {
             createScenes(for: size)
         }
         if playTick3 {
-            sounder.playTick(blipLength: 0.18) // beep exactly when "3" first appears
+            // Beep exactly when “3” first appears.
+            sounder.playTick(blipLength: 0.18)
         }
     }
 
@@ -191,22 +192,17 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Subviews
+// MARK: - Smaller subviews
 
-private struct GameSplitView: View {
-    let size: CGSize
-    let input: PlayerInput
-    let coordinator: GameCoordinator
+private struct GameBoard: View {
+    let leftScene: SKScene?
+    let rightScene: SKScene?
 
     var body: some View {
         HStack(spacing: 0) {
-            SpriteView(scene: GameScene(size: CGSize(width: size.width/2, height: size.height),
-                                        side: .left, input: input, coordinator: coordinator))
-            SpriteView(scene: GameScene(size: CGSize(width: size.width/2, height: size.height),
-                                        side: .right, input: input, coordinator: coordinator))
+            SpriteView(scene: leftScene ?? SKScene())
+            SpriteView(scene: rightScene ?? SKScene())
         }
-        .background(Color.black)
-        .ignoresSafeArea()
     }
 }
 
@@ -264,12 +260,12 @@ private struct WinnerFlashOverlay: View {
         }
         .ignoresSafeArea()
         .transition(.opacity)
-        .allowsHitTesting(false)
         .onAppear {
             withAnimation(.easeInOut(duration: 0.5).repeatCount(2, autoreverses: true)) {
                 winnerPulse = true
             }
         }
+        .allowsHitTesting(false)
     }
 }
 
@@ -277,15 +273,14 @@ private struct PauseButtons: View {
     let tap: () -> Void
     var body: some View {
         VStack {
-            Button(action: tap) { PauseCircle(label: "Pause").rotationEffect(.degrees(180)) }
+            Button(action: tap) { PauseChip(label: "Pause").rotationEffect(.degrees(180)) }
                 .padding(.top, 6)
                 .accessibilityLabel("Pause (top)")
             Spacer()
-            Button(action: tap) { PauseCircle(label: "Pause") }
+            Button(action: tap) { PauseChip(label: "Pause") }
                 .padding(.bottom, 6)
                 .accessibilityLabel("Pause (bottom)")
         }
-        .padding(.horizontal, 20)
     }
 }
 
@@ -328,6 +323,26 @@ private struct PlayerControlsMirrored: View {
         .background(Color.black)
     }
 }
+
+private struct PauseChip: View {
+    var label: String
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "pause.fill").font(.subheadline.bold())
+            Text(label).font(.subheadline.bold())
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(.ultraThinMaterial)
+        .foregroundStyle(.white)
+        .clipShape(Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.25), lineWidth: 1))
+        .shadow(color: .black.opacity(0.4), radius: 4, y: 2)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Sheets (defined here so they’re always in scope)
 
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
@@ -391,32 +406,6 @@ private struct PauseSheet: View {
         }
         .padding(.bottom, 14)
         .presentationDetents([.height(280), .medium])
-    }
-}
-
-// MARK: - Reusable UI bits
-
-/// Compact pause chip so it won’t encroach on roads.
-private struct PauseCircle: View {
-    var label: String
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "pause.fill")
-                .font(.subheadline.bold())
-            Text(label)
-                .font(.subheadline.bold())
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 32) // compact (was 48)
-        .background(.ultraThinMaterial)
-        .foregroundStyle(.white)
-        .clipShape(Capsule(style: .continuous))
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(.white.opacity(0.25), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.4), radius: 4, y: 2)
-        .contentShape(Rectangle())
     }
 }
 

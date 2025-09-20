@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct HomeView: View {
     @State private var animateCars = false
@@ -97,6 +98,8 @@ struct HomeView: View {
             .navigationBarHidden(true)
         }
         .onAppear {
+            // Start/continue background track for menu
+            BGM.shared.play(volume: 0.24) // gentle in the menu
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 animateCars = true
             }
