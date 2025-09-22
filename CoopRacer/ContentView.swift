@@ -6,6 +6,7 @@ import SpriteKit
 struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject var settings: SettingsStore
 
     @StateObject private var input = PlayerInput()
     @StateObject private var coordinator = GameCoordinator()
@@ -72,14 +73,14 @@ struct ContentView: View {
         }
         // Player 1 controls (bottom)
         .safeAreaInset(edge: .bottom) {
-            PlayerControls(title: "PLAYER 1",
+            PlayerControls(title: settings.player1Name.uppercased(),
                            color: Theme.p1,
                            left: $input.p1Left,
                            right: $input.p1Right)
         }
         // Player 2 controls (top, mirrored)
         .safeAreaInset(edge: .top) {
-            PlayerControlsMirrored(title: "PLAYER 2",
+            PlayerControlsMirrored(title: settings.player2Name.uppercased(),
                                    color: Theme.p2,
                                    left: $input.p2Left,
                                    right: $input.p2Right)
@@ -103,6 +104,15 @@ struct ContentView: View {
                 AdManager.shared.noteRoundCompleted()
                 AdManager.shared.preload()
                 didTryAdAfterResults = false
+                // ✅ Save high score using the new store
+                let p1 = SettingsStore.shared.player1Name
+                let p2 = SettingsStore.shared.player2Name
+                HighScoresStore.shared.add(
+                    p1Name: SettingsStore.shared.player1Name,
+                    p2Name: SettingsStore.shared.player2Name,
+                    p1Score: coordinator.p1Score,
+                    p2Score: coordinator.p2Score
+                )
             }
         }
         // Pause sheet
@@ -217,8 +227,17 @@ struct ContentView: View {
     private func createScenes(for size: CGSize) {
         lastGeoSize = size
         let half = CGSize(width: size.width / 2, height: size.height)
-        leftScene  = GameScene(size: half, side: .left,  input: input, coordinator: coordinator)
-        rightScene = GameScene(size: half, side: .right, input: input, coordinator: coordinator)
+        leftScene  = GameScene(size: half,
+                               side: .left,
+                               input: input,
+                               coordinator: coordinator,
+                               carPNG: settings.player1Car)
+        
+        rightScene = GameScene(size: half,
+                               side: .right,
+                               input: input,
+                               coordinator: coordinator,
+                               carPNG: settings.player2Car)
     }
 }
 

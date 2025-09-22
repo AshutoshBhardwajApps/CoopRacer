@@ -3,6 +3,7 @@ import SpriteKit
 final class GameScene: SKScene {
     enum Side { case left, right }
     // === Car appearance toggle ===
+    private let chosenCarPNG: String
     private let USE_IMAGE_CAR = true            // <- set to false to go back to drawn car
     private let LEFT_CAR_IMAGE  = "Audi"        // your red PNG filename (no extension)
     private let RIGHT_CAR_IMAGE = "Audi"      // your other PNG (change if you like)
@@ -69,10 +70,16 @@ final class GameScene: SKScene {
     private var engineNode: SKAudioNode?
 
     // Init
-    init(size: CGSize, side: Side, input: PlayerInput, coordinator: GameCoordinator) {
+    init(size: CGSize,
+         side: Side,
+         input: PlayerInput,
+         coordinator: GameCoordinator,
+         carPNG: String)  // <-- NEW
+    {
         self.side = side
         self.input = input
         self.coordinator = coordinator
+        self.chosenCarPNG = carPNG   // save it
         super.init(size: size)
         scaleMode = .resizeFill
         backgroundColor = .black
@@ -116,10 +123,15 @@ final class GameScene: SKScene {
 
         // --- Car (PNG or procedural; single placement path) ---
         if usePNGCar {
-            let texName = (side == .left) ? "Audi" : "Police"   // use whatever names you like
-            carNode = makePNGCar(textureName: texName)          // <-- no tint
+            // ✅ Use the player’s chosen car from SettingsStore
+            let carName = (side == .left)
+                ? SettingsStore.shared.player1Car
+                : SettingsStore.shared.player2Car
+
+            carNode = makePNGCar(textureName: carName) // ✅ keeps raw PNG colors
+
         } else {
-            let accent: SKColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
+            let accent: SKColor = (side == .left) ? Theme.p1SK : Theme.p2SK
             carNode = makeCar(color: accent)
         }
 
@@ -331,23 +343,23 @@ final class GameScene: SKScene {
         addChild(startLine)
         addChild(finishLine)
     }
-    private func makePNGCar(textureName: String) -> SKSpriteNode {
+    private func makePNGCar(textureName: String, tint: SKColor? = nil) -> SKSpriteNode {
         let tex = SKTexture(imageNamed: textureName)
         tex.filteringMode = .linear
 
-        // Keep aspect; size similar to the drawn car feel
-        let baseWidth = laneWidth * 0.70
-        let scale: CGFloat = 1.8   // try values like 1.2, 1.5, 0.8
-        let targetWidth = baseWidth * scale
+        let targetWidth = laneWidth * 0.60
         let aspect = tex.size().height / tex.size().width
         let targetSize = CGSize(width: targetWidth, height: targetWidth * aspect)
 
         let node = SKSpriteNode(texture: tex, size: targetSize)
         node.zPosition = 100
 
-        // NO tinting at all:
-        node.colorBlendFactor = 0.0
-
+        if let tint = tint {
+            node.color = tint
+            node.colorBlendFactor = 0.85
+        } else {
+            node.colorBlendFactor = 0.0  // keeps original PNG colors
+        }
         return node
     }
     private func addProgressBar() {

@@ -98,6 +98,7 @@ final class GameCoordinator: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             self?.showResults = true
         }
+        
     }
 
     func addScore(player1: Bool, points: Int) {

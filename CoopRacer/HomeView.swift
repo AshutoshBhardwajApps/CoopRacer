@@ -74,6 +74,19 @@ struct HomeView: View {
 
                     Spacer()
 
+                    NavigationLink {
+                        SettingsView()
+                    } label: {
+                        MenuButtonLabel(title: "SETTINGS")
+                    }
+                    .padding(.horizontal, 28)
+
+                    NavigationLink {
+                        HighScoresView()
+                    } label: {
+                        MenuButtonLabel(title: "HIGH SCORES")
+                    }
+                    .padding(.horizontal, 28)
                     // Big bottom "Event" button
                     Button {
                         showComingSoon = true
