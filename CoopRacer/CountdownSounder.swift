@@ -1,69 +1,58 @@
+import Foundation
 import AVFoundation
+import QuartzCore   // ✅ for CACurrentMediaTime
 
-@MainActor
 final class CountdownSounder {
     private var player: AVAudioPlayer?
+    private var lastPlayTime: CFTimeInterval = 0
 
-    /// Short blip for 3/2/1.
-    func playTick(blipLength: TimeInterval = 0.18) {
-        guard let url =
-            Bundle.main.url(forResource: "race_countdown_tick", withExtension: "mp3")
-            ?? Bundle.main.url(forResource: "race_countdown1", withExtension: "mp3")
-        else { return }
-
-        // Stop any in-flight audio so ticks don’t overlap.
-        stop()
-
-        do {
-            let p = try AVAudioPlayer(contentsOf: url)
-            p.prepareToPlay()
-            p.numberOfLoops = 0
-            p.play()
-            player = p
-
-            // Hard stop after the blip so it never lingers.
-            DispatchQueue.main.asyncAfter(deadline: .now() + blipLength) { [weak self] in
-                guard let self = self, self.player === p else { return }
-                self.player?.stop()
-                self.player = nil
-            }
-        } catch { /* ignore */ }
+    /// Play a short tick (used for "3", "2", "1").
+    func playTick(blipLength: TimeInterval = 0.15) {
+        guard !isRateLimited() else { return }
+        play(name: "race_countdown1", ext: "mp3", trim: blipLength)
     }
 
-    /// Play only the tail of the countdown file at GO (default 0.5s).
+    /// Play only the tail of the countdown file (used for "GO").
     func playGoTail(tail: TimeInterval = 0.5) {
-        // Prefer a dedicated GO file if present; otherwise take the tail of countdown1.
-        guard let url =
-            Bundle.main.url(forResource: "race_go", withExtension: "mp3")
-            ?? Bundle.main.url(forResource: "race_countdown1", withExtension: "mp3")
-        else { return }
+        guard !isRateLimited() else { return }
+        play(name: "race_countdown1", ext: "mp3", tail: tail)
+    }
 
-        // Ensure no tick is still playing.
-        stop()
+    private func play(name: String, ext: String, trim: TimeInterval? = nil, tail: TimeInterval? = nil) {
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
+            print("⚠️ Missing sound: \(name).\(ext)")
+            return
+        }
 
         do {
-            let p = try AVAudioPlayer(contentsOf: url)
-            p.prepareToPlay()
-            p.numberOfLoops = 0
-
-            // Jump to the last `tail` seconds (clamped to start ≥ 0).
-            let start = max(0, p.duration - tail)
-            p.currentTime = start
-            p.play()
-            player = p
-
-            // Stop right after the tail to avoid lingering ambience.
-            let guardTime = min(tail + 0.05, p.duration)
-            DispatchQueue.main.asyncAfter(deadline: .now() + guardTime) { [weak self] in
-                guard let self = self, self.player === p else { return }
-                self.player?.stop()
-                self.player = nil
+            let audio = try AVAudioPlayer(contentsOf: url)
+            if let trim = trim {
+                audio.currentTime = 0
+                audio.play()
+                audio.setVolume(1, fadeDuration: 0)
+                audio.perform(#selector(audio.stop), with: nil, afterDelay: trim)
+            } else if let tail = tail {
+                let startTime = max(0, audio.duration - tail)
+                audio.currentTime = startTime
+                audio.play()
+            } else {
+                audio.play()
             }
-        } catch { /* ignore */ }
+            player = audio
+            lastPlayTime = CACurrentMediaTime()
+        } catch {
+            print("⚠️ Audio error: \(error)")
+        }
     }
 
     func stop() {
         player?.stop()
         player = nil
+    }
+
+    private func isRateLimited() -> Bool {
+        let now = CACurrentMediaTime()
+        if now - lastPlayTime < 0.1 { return true }
+        return false
     }
 }

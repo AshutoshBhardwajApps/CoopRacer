@@ -123,12 +123,17 @@ final class GameScene: SKScene {
         carNode.position = CGPoint(x: playableRect.midX, y: carY)
         if side == .right { carNode.zRotation = .pi } // face the top player
         addChild(carNode)
-
+        carNode.zPosition = 100
         // Place START just in front of the car (toward driving direction)
+        let behindOffset: CGFloat = 28
         if side == .left {
-            startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - 28) // toward bottom
+            // bottom player drives UP → checker sits BELOW the car
+            startLine.position = CGPoint(x: playableRect.midX,
+                                         y: carNode.position.y - behindOffset)
         } else {
-            startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + 28) // toward top
+            // top player drives DOWN → checker sits ABOVE the car
+            startLine.position = CGPoint(x: playableRect.midX,
+                                         y: carNode.position.y + behindOffset)
         }
 
         // Distance bar
@@ -277,6 +282,9 @@ final class GameScene: SKScene {
     private func buildCheckeredLines() {
         startLine = checkered(width: playableRect.width * 0.8, height: 18)
         finishLine = checkered(width: playableRect.width * 0.8, height: 18)
+        // Put them under the car
+        startLine.zPosition = 60
+        finishLine.zPosition = 60
         addChild(startLine)
         addChild(finishLine)
     }
@@ -377,61 +385,76 @@ final class GameScene: SKScene {
 
     // MARK: - Update
     override func update(_ currentTime: TimeInterval) {
+        // --- Delta time ---
         if lastUpdate == 0 { lastUpdate = currentTime; return }
         let dt = currentTime - lastUpdate
         lastUpdate = currentTime
 
-        // ==== 1) Global Pause handling (must be first) ====
+        // --- Global pause handling (freeze scene logic) ---
         if coordinator?.isPaused == true {
             if !wasPaused {
-                stopEngineLoop()   // fade/stop engine once on entering pause
+                stopEngineLoop()   // fade/stop once on entering pause
                 wasPaused = true
             }
-            return                 // freeze scene updates while paused
+            return
         } else if wasPaused {
-            // Just resumed
+            // Just resumed from pause
             startEngineLoop()
             wasPaused = false
         }
 
-        // ==== 2) Allow lateral steering even before race starts ====
+        // --- Let players steer laterally even before the race starts ---
         applyLateralMovement(dt: dt)
 
-        // ==== 3) If race hasn't started, stop here (no scrolling yet) ====
-        guard coordinator?.raceStarted == true else { return }
+        // --- Start checker positioning during countdown (kept BEHIND the car) ---
+        if coordinator?.raceStarted != true {
+            let behind: CGFloat = 28
+            if side == .left {
+                // bottom player drives UP → checker stays BELOW the car
+                startLine.position = CGPoint(x: playableRect.midX,
+                                             y: carNode.position.y - behind)
+            } else {
+                // top player drives DOWN → checker stays ABOVE the car
+                startLine.position = CGPoint(x: playableRect.midX,
+                                             y: carNode.position.y + behind)
+            }
+            return
+        }
 
-        // ==== 4) If round is over, stop engine and stop updating ====
+        // --- If round ended, stop engine and stop updating gameplay ---
         if coordinator?.roundActive == false {
             stopEngineLoop()
             return
         }
 
-        // ==== 5) World scrolling / gameplay ====
-        let dir: CGFloat = (side == .left) ? -1.0 : +1.0
+        // --- World scrolling / gameplay ---
+        // Bottom (left) lane appears to "drive up" the screen → world scrolls DOWN (neg Y)
+        // Top (right) lane appears to "drive down"           → world scrolls UP   (pos Y)
+        let worldDir: CGFloat = (side == .left) ? -1.0 : +1.0
         let speed = baseSpeed * speedMultiplier
-        let dy = dir * speed * CGFloat(dt)
+        let dy = worldDir * speed * CGFloat(dt)
 
-        // Distance & progress
+        // Distance + progress bar
         distanceAdvanced += abs(dy)
         let ratio = min(distanceAdvanced / totalTrackDistance, 1.0)
         updateProgressFill(ratio: ratio)
 
-        // Center dashed line via PHASE (use a single positive phase; mirror in layout)
+        // Center dashed line via PHASE (never flickers)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
         layoutDashes()
 
-        // Move checkered lines with the world
+        // Start/Finish move with the world
         startLine.position.y += dy
         finishLine.position.y += dy
 
-        // Remove start line after it scrolls off the player's edge
+        // Remove start line once it's fully off the player's edge
         if side == .left, startLine.position.y < playableRect.minY - 40 {
             startLine.removeFromParent()
         } else if side == .right, startLine.position.y > playableRect.maxY + 40 {
             startLine.removeFromParent()
         }
 
-        // Spawn / move obstacles; score clean dodges only
+        // --- Spawning / moving obstacles + scoring clean passes ---
         spawnAccum += dt
         if spawnAccum >= spawnInterval {
             spawnAccum = 0
@@ -443,7 +466,7 @@ final class GameScene: SKScene {
         for ob in obstacles {
             ob.position.y += dy
 
-            // Collision (mark touched, apply penalty, play sound)
+            // Simple collision check (AABB-ish)
             let dx = abs(ob.position.x - carNode.position.x)
             let dyC = abs(ob.position.y - carNode.position.y)
             var touched = (ob.userData?["touched"] as? Bool) ?? false
@@ -451,8 +474,11 @@ final class GameScene: SKScene {
                 if !touched {
                     ob.userData?["touched"] = true
                     touched = true
-                    let flash = SKAction.sequence([.fadeAlpha(to: 0.4, duration: 0.05),
-                                                   .fadeAlpha(to: 1.0, duration: 0.15)])
+                    // Feedback: flash car, slow down smoothly, crash sound
+                    let flash = SKAction.sequence([
+                        .fadeAlpha(to: 0.4, duration: 0.05),
+                        .fadeAlpha(to: 1.0, duration: 0.15)
+                    ])
                     carNode.run(flash)
                     applySmoothPenalty()
                     playCrash()
@@ -461,14 +487,14 @@ final class GameScene: SKScene {
 
             // Off-screen → remove; award only if untouched
             if side == .left, ob.position.y < playableRect.minY - 40 {
-                if !touched { coordinator?.addScore(player1: true, points: 1) }
+                if !touched { coordinator?.addScore(player1: true,  points: 1) }
                 toRemove.append(ob)
             } else if side == .right, ob.position.y > playableRect.maxY + 40 {
                 if !touched { coordinator?.addScore(player1: false, points: 1) }
                 toRemove.append(ob)
             }
         }
-        toRemove.forEach { n in n.removeFromParent() }
+        toRemove.forEach { $0.removeFromParent() }
         obstacles.removeAll { toRemove.contains($0) }
     }
 

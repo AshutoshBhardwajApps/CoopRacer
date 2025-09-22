@@ -7,7 +7,8 @@ struct CoopRacerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HomeView()  // or your current root view
+            HomeView()
+                .background(AdPresenter())   // <= mount anchor here (app root)
         }
     }
 }

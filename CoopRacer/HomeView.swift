@@ -1,5 +1,4 @@
 import SwiftUI
-import AVFoundation
 
 struct HomeView: View {
     @State private var animateCars = false
@@ -58,15 +57,16 @@ struct HomeView: View {
                         }
 
                         NavigationLink {
-                            // Your existing game view
                             ContentView()
                                 .navigationBarBackButtonHidden(true)
                         } label: {
                             MenuButtonLabel(
                                 title: "TWO PLAYER",
-                                accent: LinearGradient(colors: [Theme.p1, Theme.p1.opacity(0.7)],
-                                                       startPoint: .topLeading,
-                                                       endPoint: .bottomTrailing)
+                                accent: LinearGradient(
+                                    colors: [Theme.p1, Theme.p1.opacity(0.7)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             )
                         }
                     }
@@ -98,8 +98,13 @@ struct HomeView: View {
             .navigationBarHidden(true)
         }
         .onAppear {
+            // Let ContentView clear any navigation flags when we’re safely back home
+            NotificationCenter.default.post(name: Notification.Name("CoopRacer.ResetNavFlag"), object: nil)
+
             // Start/continue background track for menu
-            BGM.shared.play(volume: 0.24) // gentle in the menu
+            BGM.shared.play(volume: 0.24)
+
+            // Gentle header car wiggle
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 animateCars = true
             }
@@ -115,8 +120,10 @@ struct HomeView: View {
 // Simple reusable menu button label
 private struct MenuButtonLabel: View {
     var title: String
-    var accent: LinearGradient = .init(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)],
-                                       startPoint: .top, endPoint: .bottom)
+    var accent: LinearGradient = .init(
+        colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)],
+        startPoint: .top, endPoint: .bottom
+    )
 
     var body: some View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -126,6 +133,8 @@ private struct MenuButtonLabel: View {
                 Text(title)
                     .font(.headline.weight(.bold))
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
