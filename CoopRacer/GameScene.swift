@@ -2,6 +2,16 @@ import SpriteKit
 
 final class GameScene: SKScene {
     enum Side { case left, right }
+    // === Car appearance toggle ===
+    private let USE_IMAGE_CAR = true            // <- set to false to go back to drawn car
+    private let LEFT_CAR_IMAGE  = "Audi"        // your red PNG filename (no extension)
+    private let RIGHT_CAR_IMAGE = "Audi"      // your other PNG (change if you like)
+    // Use the PNG car instead of the procedural drawing
+    private let usePNGCar = true
+    // Match the old box-car footprint exactly (30×50 points)
+    private let CAR_BASE_SIZE = CGSize(width: 30, height: 50)
+    // Optional global scale if you want it a bit larger/smaller later
+    private let CAR_SCALE: CGFloat = 1.0   // try 1.3 if you want bigger
 
     // Injected
     private let side: Side
@@ -101,29 +111,27 @@ final class GameScene: SKScene {
         buildCheckeredLines()
 
         // Car (procedural top-down)
-        let accent: SKColor = {
-            if (Side.left == side) {
-                #if canImport(UIKit)
-                return (Theme.p1SK ?? .red)
-                #else
-                return .red
-                #endif
-            } else {
-                #if canImport(UIKit)
-                return (Theme.p2SK ?? .blue)
-                #else
-                return .blue
-                #endif
-            }
-        }()
-        carNode = makeCar(color: accent)
+        // --- Car (PNG or procedural; single placement path) ---
+        let accent: SKColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
+
+        // --- Car (PNG or procedural; single placement path) ---
+        if usePNGCar {
+            let texName = (side == .left) ? "Audi" : "Police"   // use whatever names you like
+            carNode = makePNGCar(textureName: texName)          // <-- no tint
+        } else {
+            let accent: SKColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
+            carNode = makeCar(color: accent)
+        }
+
+        // Common placement for both cars
         let carY: CGFloat = (side == .left)
             ? playableRect.minY + playableRect.height * 0.18
             : playableRect.maxY - playableRect.height * 0.18
+
         carNode.position = CGPoint(x: playableRect.midX, y: carY)
-        if side == .right { carNode.zRotation = .pi } // face the top player
-        addChild(carNode)
+        if side == .right { carNode.zRotation = .pi }
         carNode.zPosition = 100
+        addChild(carNode)
         // Place START just in front of the car (toward driving direction)
         let behindOffset: CGFloat = 28
         if side == .left {
@@ -170,53 +178,88 @@ final class GameScene: SKScene {
     }
 
     // MARK: - Car builder (procedural top-down car, no assets)
+    // MARK: - Car builder (PNG or procedural)
     private func makeCar(color: SKColor) -> SKNode {
-        let car = SKNode()
+        let targetW = CAR_BASE_SIZE.width  * CAR_SCALE
+        let targetH = CAR_BASE_SIZE.height * CAR_SCALE
 
-        // Body
-        let body = SKShapeNode(rectOf: CGSize(width: 30, height: 50), cornerRadius: 6)
-        body.fillColor = color
-        body.strokeColor = .black
-        body.lineWidth = 1.5
-        body.zPosition = 30
-        car.addChild(body)
+        if USE_IMAGE_CAR {
+            // Pick the right image by side
+            let name = (side == .left) ? LEFT_CAR_IMAGE : RIGHT_CAR_IMAGE
+            let tex  = SKTexture(imageNamed: name)
+            tex.filteringMode = .linear
 
-        // Wheels
-        let wheelSize = CGSize(width: 8, height: 14)
-        let wheelOffsets: [(CGFloat, CGFloat)] = [(-14, -16), (14, -16), (-14, 16), (14, 16)]
-        for (dx, dy) in wheelOffsets {
-            let wheel = SKShapeNode(rectOf: wheelSize, cornerRadius: 2)
-            wheel.fillColor = SKColor(white: 0.08, alpha: 1.0)
-            wheel.strokeColor = .black
-            wheel.lineWidth = 1
-            wheel.position = CGPoint(x: dx, y: dy)
-            wheel.zPosition = 31
-            car.addChild(wheel)
+            // Preserve PNG aspect ratio but fit INSIDE the 30×50 box (scaled)
+            let ar = tex.size().width / tex.size().height   // w/h
+            var finalW = targetW
+            var finalH = targetH
+            if ar > (targetW / targetH) {
+                // image is “wider” → cap width, reduce height to keep aspect
+                finalH = finalW / ar
+            } else {
+                // image is “taller” → cap height, reduce width to keep aspect
+                finalW = finalH * ar
+            }
+
+            let sprite = SKSpriteNode(texture: tex, size: CGSize(width: finalW, height: finalH))
+            sprite.zPosition = 100
+            // If your PNGs are already colored, do not tint:
+            sprite.colorBlendFactor = 0.0
+            return sprite
+        } else {
+            // Your original drawn car at the same footprint (scaled)
+            let car = SKNode()
+
+            // Body
+            let body = SKShapeNode(rectOf: CGSize(width: targetW, height: targetH), cornerRadius: 6)
+            body.fillColor = color
+            body.strokeColor = .black
+            body.lineWidth = 1.5
+            body.zPosition = 30
+            car.addChild(body)
+
+            // Wheels (scaled proportionally)
+            let wheelW: CGFloat = 8 * CAR_SCALE
+            let wheelH: CGFloat = 14 * CAR_SCALE
+            let wheelSize = CGSize(width: wheelW, height: wheelH)
+            let xOff: CGFloat = (targetW / 2) - (wheelW / 2) - 2
+            let yOff: CGFloat = (targetH / 2) - (wheelH / 2) - 2
+            let wheelOffsets: [(CGFloat, CGFloat)] = [(-xOff, -yOff), (xOff, -yOff), (-xOff, yOff), (xOff, yOff)]
+            for (dx, dy) in wheelOffsets {
+                let wheel = SKShapeNode(rectOf: wheelSize, cornerRadius: 2 * CAR_SCALE)
+                wheel.fillColor = SKColor(white: 0.08, alpha: 1.0)
+                wheel.strokeColor = .black
+                wheel.lineWidth = 1
+                wheel.position = CGPoint(x: dx, y: dy)
+                wheel.zPosition = 31
+                car.addChild(wheel)
+            }
+
+            // Windshield
+            let windshield = SKShapeNode(rectOf: CGSize(width: 20*CAR_SCALE, height: 10*CAR_SCALE), cornerRadius: 2*CAR_SCALE)
+            windshield.fillColor = SKColor(cgColor: CGColor(red: 0.75, green: 0.9, blue: 1.0, alpha: 0.9))
+            windshield.strokeColor = .clear
+            windshield.position = CGPoint(x: 0, y: (targetH/2) - (10*CAR_SCALE))
+            windshield.zPosition = 32
+            car.addChild(windshield)
+
+            // Rear lights
+            func tail(_ x: CGFloat) -> SKShapeNode {
+                let r: CGFloat = 2.5 * CAR_SCALE
+                let t = SKShapeNode(circleOfRadius: r)
+                t.fillColor = .red
+                t.strokeColor = .clear
+                t.position = CGPoint(x: x, y: -(targetH/2) + r*1.5)
+                t.zPosition = 32
+                return t
+            }
+            car.addChild(tail(-(targetW/2) + 8*CAR_SCALE))
+            car.addChild(tail( (targetW/2) - 8*CAR_SCALE))
+
+            car.zPosition = 100
+            return car
         }
-
-        // Windshield (forward)
-        let windshield = SKShapeNode(rectOf: CGSize(width: 20, height: 10), cornerRadius: 2)
-        windshield.fillColor = SKColor(cgColor: CGColor(red: 0.75, green: 0.9, blue: 1.0, alpha: 0.9))
-        windshield.strokeColor = .clear
-        windshield.position = CGPoint(x: 0, y: 12)
-        windshield.zPosition = 32
-        car.addChild(windshield)
-
-        // Rear lights
-        func tail(_ x: CGFloat) -> SKShapeNode {
-            let t = SKShapeNode(circleOfRadius: 2.5)
-            t.fillColor = .red
-            t.strokeColor = .clear
-            t.position = CGPoint(x: x, y: -22)
-            t.zPosition = 32
-            return t
-        }
-        car.addChild(tail(-8))
-        car.addChild(tail(+8))
-
-        return car
     }
-
     // MARK: - Builders
     private func buildDashes() {
         dashNodes.forEach { $0.removeFromParent() }
@@ -288,7 +331,25 @@ final class GameScene: SKScene {
         addChild(startLine)
         addChild(finishLine)
     }
+    private func makePNGCar(textureName: String) -> SKSpriteNode {
+        let tex = SKTexture(imageNamed: textureName)
+        tex.filteringMode = .linear
 
+        // Keep aspect; size similar to the drawn car feel
+        let baseWidth = laneWidth * 0.70
+        let scale: CGFloat = 1.8   // try values like 1.2, 1.5, 0.8
+        let targetWidth = baseWidth * scale
+        let aspect = tex.size().height / tex.size().width
+        let targetSize = CGSize(width: targetWidth, height: targetWidth * aspect)
+
+        let node = SKSpriteNode(texture: tex, size: targetSize)
+        node.zPosition = 100
+
+        // NO tinting at all:
+        node.colorBlendFactor = 0.0
+
+        return node
+    }
     private func addProgressBar() {
         let barWidth: CGFloat = 8
         let barHeight: CGFloat = playableRect.height * 0.9
@@ -533,11 +594,13 @@ final class GameScene: SKScene {
         ]))
 
         // Desaturate car (tint gray)
-        carNode.removeAction(forKey: "recoverTint")
-        let tintDown = SKAction.colorize(with: .gray, colorBlendFactor: 0.7, duration: 0.12)
-        tintDown.timingMode = .easeOut
-        carNode.run(tintDown, withKey: "recoverTint")
-
+        // Desaturate car (tint gray) — ONLY for procedural car
+        if !usePNGCar {
+            carNode.removeAction(forKey: "recoverTint")
+            let tintDown = SKAction.colorize(with: .gray, colorBlendFactor: 0.7, duration: 0.12)
+            tintDown.timingMode = .easeOut
+            carNode.run(tintDown, withKey: "recoverTint")
+        }
         // Duck engine
         engineNode?.run(.changeVolume(to: 0.15, duration: 0.10))
 
@@ -561,10 +624,12 @@ final class GameScene: SKScene {
         let finish = SKAction.run { [weak self] in
             guard let self else { return }
             self.isRecovering = false
-            // Restore visuals and audio
-            let tintUp = SKAction.colorize(withColorBlendFactor: 0.0, duration: 0.20)
-            tintUp.timingMode = .easeIn
-            self.carNode.run(tintUp, withKey: "recoverTint")
+            // Restore visuals — ONLY for procedural car
+            if !self.usePNGCar {
+                let tintUp = SKAction.colorize(withColorBlendFactor: 0.0, duration: 0.20)
+                tintUp.timingMode = .easeIn
+                self.carNode.run(tintUp, withKey: "recoverTint")
+            }
             self.slowVignette?.run(.fadeAlpha(to: 0.0, duration: 0.25))
             self.engineNode?.run(.changeVolume(to: 0.45, duration: 0.25))
         }
