@@ -347,7 +347,7 @@ final class GameScene: SKScene {
         let tex = SKTexture(imageNamed: textureName)
         tex.filteringMode = .linear
 
-        let targetWidth = laneWidth * 0.60
+        let targetWidth = laneWidth * 0.8
         let aspect = tex.size().height / tex.size().width
         let targetSize = CGSize(width: targetWidth, height: targetWidth * aspect)
 
@@ -395,7 +395,54 @@ final class GameScene: SKScene {
         progressFill.fillColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
         progressFill.strokeColor = .clear
     }
+    // Call this when a new round starts (if you keep the same scene instance)
+    func prepareForNewRound() {
+        // Clear obstacles
+        obstacles.forEach { $0.removeFromParent() }
+        obstacles.removeAll()
 
+        // Reset timers/state
+        lastUpdate = 0
+        spawnAccum = 0
+        speedMultiplier = 1
+        dashPhase = 0
+        distanceAdvanced = 0
+        updateProgressFill(ratio: 0)
+        layoutDashes()
+
+        // --- Start line: recreate if nil, otherwise ensure it's in the scene
+        if startLine == nil {
+            startLine = checkered(width: playableRect.width * 0.8, height: 18)
+            startLine.zPosition = 60
+            addChild(startLine)
+        } else if startLine.parent == nil {
+            addChild(startLine)
+        }
+
+        // Put the start line back behind the car for the next countdown
+        let behind: CGFloat = 28
+        if side == .left {
+            startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
+        } else {
+            startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behind)
+        }
+
+        // --- Finish line: always recreate fresh
+        if finishLine != nil {
+            finishLine.removeFromParent()
+        }
+        finishLine = checkered(width: playableRect.width * 0.8, height: 18)
+        finishLine.zPosition = 60
+        addChild(finishLine)
+
+        let totalSeconds: CGFloat = 30
+        totalTrackDistance = baseSpeed * totalSeconds
+        if side == .left {
+            finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + totalTrackDistance)
+        } else {
+            finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
+        }
+    }
     // MARK: - Vignette helper
     private func ensureSlowVignette() {
         guard slowVignette == nil else { return }
@@ -466,12 +513,11 @@ final class GameScene: SKScene {
         // --- Global pause handling (freeze scene logic) ---
         if coordinator?.isPaused == true {
             if !wasPaused {
-                stopEngineLoop()   // fade/stop once on entering pause
+                stopEngineLoop()
                 wasPaused = true
             }
             return
         } else if wasPaused {
-            // Just resumed from pause
             startEngineLoop()
             wasPaused = false
         }
@@ -479,30 +525,28 @@ final class GameScene: SKScene {
         // --- Let players steer laterally even before the race starts ---
         applyLateralMovement(dt: dt)
 
-        // --- Start checker positioning during countdown (kept BEHIND the car) ---
+        // === COUNTDOWN (not started yet) ===
         if coordinator?.raceStarted != true {
+            // Keep the start line BEHIND the car (car sits visually on top)
             let behind: CGFloat = 28
             if side == .left {
-                // bottom player drives UP → checker stays BELOW the car
-                startLine.position = CGPoint(x: playableRect.midX,
-                                             y: carNode.position.y - behind)
+                startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
             } else {
-                // top player drives DOWN → checker stays ABOVE the car
-                startLine.position = CGPoint(x: playableRect.midX,
-                                             y: carNode.position.y + behind)
+                startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behind)
             }
+
+            // Make sure progress looks reset while waiting
+            updateProgressFill(ratio: 0)
             return
         }
 
-        // --- If round ended, stop engine and stop updating gameplay ---
+        // If the round ended after we started, stop updates (leave the final bar filled)
         if coordinator?.roundActive == false {
             stopEngineLoop()
             return
         }
 
-        // --- World scrolling / gameplay ---
-        // Bottom (left) lane appears to "drive up" the screen → world scrolls DOWN (neg Y)
-        // Top (right) lane appears to "drive down"           → world scrolls UP   (pos Y)
+        // === ACTIVE RACE ===
         let worldDir: CGFloat = (side == .left) ? -1.0 : +1.0
         let speed = baseSpeed * speedMultiplier
         let dy = worldDir * speed * CGFloat(dt)
@@ -516,18 +560,18 @@ final class GameScene: SKScene {
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
         layoutDashes()
 
-        // Start/Finish move with the world
+        // Move checkered lines with the world
         startLine.position.y += dy
         finishLine.position.y += dy
 
-        // Remove start line once it's fully off the player's edge
-        if side == .left, startLine.position.y < playableRect.minY - 40 {
+        // Remove start line once it scrolls past player's edge
+        if side == .left, startLine.parent != nil, startLine.position.y < playableRect.minY - 40 {
             startLine.removeFromParent()
-        } else if side == .right, startLine.position.y > playableRect.maxY + 40 {
+        } else if side == .right, startLine.parent != nil, startLine.position.y > playableRect.maxY + 40 {
             startLine.removeFromParent()
         }
 
-        // --- Spawning / moving obstacles + scoring clean passes ---
+        // Spawn & move obstacles + scoring clean passes
         spawnAccum += dt
         if spawnAccum >= spawnInterval {
             spawnAccum = 0
@@ -539,7 +583,7 @@ final class GameScene: SKScene {
         for ob in obstacles {
             ob.position.y += dy
 
-            // Simple collision check (AABB-ish)
+            // Collision (mark touched + feedback once)
             let dx = abs(ob.position.x - carNode.position.x)
             let dyC = abs(ob.position.y - carNode.position.y)
             var touched = (ob.userData?["touched"] as? Bool) ?? false
@@ -547,23 +591,36 @@ final class GameScene: SKScene {
                 if !touched {
                     ob.userData?["touched"] = true
                     touched = true
-                    // Feedback: flash car, slow down smoothly, crash sound
-                    let flash = SKAction.sequence([
-                        .fadeAlpha(to: 0.4, duration: 0.05),
-                        .fadeAlpha(to: 1.0, duration: 0.15)
-                    ])
+                    let flash = SKAction.sequence([.fadeAlpha(to: 0.4, duration: 0.05),
+                                                   .fadeAlpha(to: 1.0, duration: 0.15)])
                     carNode.run(flash)
                     applySmoothPenalty()
                     playCrash()
                 }
             }
 
-            // Off-screen → remove; award only if untouched
+            // Score as soon as an untouched obstacle crosses the car
+            var scored = (ob.userData?["scored"] as? Bool) ?? false
+            if !touched && !scored {
+                if side == .left {
+                    if ob.position.y <= (carNode.position.y - 12) {
+                        coordinator?.addScore(player1: true, points: 1)
+                        ob.userData?["scored"] = true
+                        scored = true
+                    }
+                } else {
+                    if ob.position.y >= (carNode.position.y + 12) {
+                        coordinator?.addScore(player1: false, points: 1)
+                        ob.userData?["scored"] = true
+                        scored = true
+                    }
+                }
+            }
+
+            // Off-screen cleanup (no scoring here)
             if side == .left, ob.position.y < playableRect.minY - 40 {
-                if !touched { coordinator?.addScore(player1: true,  points: 1) }
                 toRemove.append(ob)
             } else if side == .right, ob.position.y > playableRect.maxY + 40 {
-                if !touched { coordinator?.addScore(player1: false, points: 1) }
                 toRemove.append(ob)
             }
         }

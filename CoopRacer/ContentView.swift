@@ -12,8 +12,10 @@ struct ContentView: View {
     @StateObject private var coordinator = GameCoordinator()
 
     private let sounder = CountdownSounder()
+    
 
     // UI state
+    @State private var goHomeAfterResults = false
     @State private var pulse = false
     @State private var winnerPulse = false
     @State private var showPause = false
@@ -87,26 +89,45 @@ struct ContentView: View {
         }
         // Results sheet
         .sheet(isPresented: $coordinator.showResults, onDismiss: {
-            // Attempt interstitial only once after the sheet is fully gone
+            // Present the ad after the sheet has fully gone
             if !didTryAdAfterResults {
                 didTryAdAfterResults = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     AdManager.shared.presentIfAllowed()
                 }
             }
+            // If user chose "Go Home", navigate home shortly after triggering the ad
+            if goHomeAfterResults {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+                    goHomeAfterResults = false
+                    dismiss() // pop back to HomeView
+                }
+            }
         }) {
             ResultsSheet(coordinator: coordinator) {
+                // --- PLAY AGAIN ---
                 pulse = false
                 winnerPulse = false
-                resetRound(playTick3: true, recreateScenes: true)
+
+                // Dismiss the sheet first
+                coordinator.showResults = false
+
+                // Let onDismiss trigger the ad, then reset the round
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    resetRound(playTick3: true, recreateScenes: false)
+                }
+
+            } goHome: {
+                // --- GO HOME ---
+                goHomeAfterResults = true
+                coordinator.showResults = false   // close sheet; onDismiss will handle ad and navigation
             }
+            .environmentObject(settings) // <- make sure names are available
             .onAppear {
                 AdManager.shared.noteRoundCompleted()
                 AdManager.shared.preload()
                 didTryAdAfterResults = false
-                // ✅ Save high score using the new store
-                let p1 = SettingsStore.shared.player1Name
-                let p2 = SettingsStore.shared.player2Name
+
                 HighScoresStore.shared.add(
                     p1Name: SettingsStore.shared.player1Name,
                     p2Name: SettingsStore.shared.player2Name,
@@ -215,13 +236,19 @@ struct ContentView: View {
     private func resetRound(playTick3: Bool, recreateScenes: Bool) {
         resumeAll()
         coordinator.startRound()
+
         if recreateScenes {
             let size = (lastGeoSize == .zero) ? UIScreen.main.bounds.size : lastGeoSize
             createScenes(for: size)
         }
-        if playTick3 {
-            sounder.playTick(blipLength: 0.18)
+
+        // Defer one tick so SpriteView attaches and didMove(to:) runs
+        DispatchQueue.main.async {
+            self.leftScene?.prepareForNewRound()
+            self.rightScene?.prepareForNewRound()
         }
+
+        if playTick3 { sounder.playTick(blipLength: 0.18) }
     }
 
     private func createScenes(for size: CGSize) {
@@ -397,27 +424,41 @@ private struct PlayerControlsMirrored: View {
 
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
+    @EnvironmentObject var settings: SettingsStore
     var playAgain: () -> Void
+    var goHome: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
             Text("Round Over").font(.largeTitle).bold()
+
             HStack {
                 VStack {
-                    Text("Player 1").foregroundStyle(Theme.p1).bold()
-                    Text("\(coordinator.p1Score)").font(.title)
+                    Text(settings.player1Name)
+                        .foregroundStyle(Theme.p1)
+                        .font(.headline).bold()
+                    Text("\(coordinator.p1Score)")
+                        .font(.title.monospacedDigit())
                 }
                 Spacer()
                 VStack {
-                    Text("Player 2").foregroundStyle(Theme.p2).bold()
-                    Text("\(coordinator.p2Score)").font(.title)
+                    Text(settings.player2Name)
+                        .foregroundStyle(Theme.p2)
+                        .font(.headline).bold()
+                    Text("\(coordinator.p2Score)")
+                        .font(.title.monospacedDigit())
                 }
             }
             .padding(.horizontal, 32)
 
-            Button("Play Again", action: playAgain)
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 12)
+            HStack(spacing: 12) {
+                Button("Play Again", action: playAgain)
+                    .buttonStyle(.borderedProminent)
+
+                Button("Go Home", role: .destructive, action: goHome)
+                    .buttonStyle(.bordered)
+            }
+            .padding(.top, 12)
         }
         .padding(24)
         .presentationDetents([.medium])

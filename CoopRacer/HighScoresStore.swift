@@ -37,7 +37,11 @@ final class HighScoresStore: ObservableObject {
         scores.removeAll()
         save()
     }
-
+    // Delete one or more rows from the list
+    func delete(at offsets: IndexSet) {
+        scores.remove(atOffsets: offsets)
+        save()
+    }
     // MARK: - Persistence
     private let key = "scores.v1"
 

@@ -25,12 +25,16 @@ struct HighScoresView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                .onDelete(perform: scores.delete)   // swipe to delete
             }
         }
         .navigationTitle("High Scores")
         .toolbar {
-            if !scores.scores.isEmpty {
-                Button("Clear") { scores.clear() }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                if !scores.scores.isEmpty {
+                    EditButton()
+                    Button("Clear") { scores.clear() }
+                }
             }
         }
     }
