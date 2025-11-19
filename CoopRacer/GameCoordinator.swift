@@ -2,61 +2,72 @@ import Foundation
 import Combine
 
 final class GameCoordinator: ObservableObject {
-    // Global pause (freezes countdown and round timer)
+
+    // MARK: - Published Round State
     @Published var isPaused: Bool = false
+    @Published var raceStarted: Bool = false
+    @Published var roundActive: Bool = false
 
-    // Round state
-    @Published var roundActive: Bool = false        // running 30s timer
-    @Published var raceStarted: Bool = false        // flips true at "START"
+    // Countdown (3…2…1…START)
+    @Published var startCountdown: Double = 3.0
+    @Published var startTick: Int = 3
 
-    // Pre-start countdown
-    @Published var startCountdown: Double = 3.0     // 3…0 for internal use
-    @Published var startTick: Int = 3               // emits 3,2,1,0 (discrete for UI/sound)
-
-    // Round timer & scoring
-    @Published var timeRemaining: Double = 30.0
+    // Scores
     @Published var p1Score: Int = 0
     @Published var p2Score: Int = 0
 
-    // Results
+    // Finish Flags
+    @Published var p1Finished: Bool = false
+    @Published var p2Finished: Bool = false
+    @Published var firstFinisher: Int? = nil   // 1 or 2
+
+    // Final Results
     @Published var showResults: Bool = false
-    @Published var winner: Int? = nil               // 1 = P1, 2 = P2, 0 = tie
+    @Published var winner: Int? = nil          // 1 = P1, 2 = P2, 0 = tie (only if simultaneous)
 
+    // Timer used ONLY for countdown, NOT race duration
     private var timer: AnyCancellable?
-    private var lastStartTick: Int = 4              // forces first emission to be 3
+    private var lastStartTick: Int = 4
 
+
+    // MARK: - Start Round
     func startRound() {
+        // Reset state
         isPaused = false
         p1Score = 0
         p2Score = 0
-        timeRemaining = 30
-        roundActive = false
-        raceStarted = false
+
+        p1Finished = false
+        p2Finished = false
+        firstFinisher = nil
+
+        winner = nil
+        showResults = false
 
         startCountdown = 3.0
         startTick = 3
         lastStartTick = 4
 
-        showResults = false
-        winner = nil
+        raceStarted = false
+        roundActive  = false
 
         timer?.cancel()
+
+        // Countdown timer only
         timer = Timer.publish(every: 0.016, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 guard let self else { return }
-
-                // Global pause: freeze clocks
                 if self.isPaused { return }
 
-                // Phase 1 — pre-start countdown
+                // === Countdown Phase ===
                 if !self.raceStarted {
                     self.startCountdown -= 0.016
 
-                    let tickNow = max(0, Int(ceil(self.startCountdown))) // 3,2,1,0
-                    if tickNow != self.lastStartTick {
-                        self.lastStartTick = tickNow
-                        self.startTick = tickNow
+                    let tick = max(0, Int(ceil(self.startCountdown)))
+                    if tick != self.lastStartTick {
+                        self.lastStartTick = tick
+                        self.startTick = tick
                     }
 
                     if self.startCountdown <= 0 {
@@ -64,44 +75,80 @@ final class GameCoordinator: ObservableObject {
                         self.raceStarted = true
                         self.roundActive = true
                     }
+
                     return
                 }
 
-                // Phase 2 — round running
-                guard self.roundActive else { return }
-                self.timeRemaining -= 0.016
-                if self.timeRemaining <= 0 {
-                    self.timeRemaining = 0
-                    self.roundActive = false
-
-                    // Decide winner
-                    if self.p1Score > self.p2Score { self.winner = 1 }
-                    else if self.p2Score > self.p1Score { self.winner = 2 }
-                    else { self.winner = 0 }
-
-                    self.timer?.cancel()
-                    // Give UI time to flash winner, then show results
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                        if !self.roundActive && self.raceStarted { self.showResults = true }
-                    }
-                }
+                // After countdown, stop timer — scene now drives the race
+                self.timer?.cancel()
             }
     }
 
-    func endRound() {
-        isPaused = false
-        roundActive = false
-        raceStarted = false
-        if p1Score > p2Score { winner = 1 }
-        else if p2Score > p1Score { winner = 2 }
-        else { winner = 0 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            self?.showResults = true
+
+    // MARK: - Player Finishes Track
+    func markFinished(player: Int) {
+        if player == 1 {
+            if !p1Finished { p1Finished = true }
+            if firstFinisher == nil { firstFinisher = 1 }
+        } else {
+            if !p2Finished { p2Finished = true }
+            if firstFinisher == nil { firstFinisher = 2 }
         }
-        
+
+        tryCompleteRound()
     }
 
+
+    // MARK: - Completion Check
+    private func tryCompleteRound() {
+        guard p1Finished && p2Finished else { return }
+
+        // Round ends
+        roundActive = false
+        raceStarted = false
+
+        // Determine winner
+        if let first = firstFinisher {
+            winner = first
+        } else {
+            winner = 0   // simultaneous or fallback
+        }
+
+        // Progress unlocks
+        SettingsStore.shared.registerRoundResult(winner: winner)
+
+        // Small delay for UI celebration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.showResults = true
+        }
+    }
+
+
+    // MARK: - Score Increment
     func addScore(player1: Bool, points: Int) {
         if player1 { p1Score += points } else { p2Score += points }
+    }
+
+
+    // MARK: - Manual Stop (if needed)
+    func endRound() {
+        roundActive = false
+        raceStarted = false
+
+        // Winner still respects "first to finish"
+        if let first = firstFinisher {
+            winner = first
+        } else {
+            // fallback: use score if someone forced end
+            if p1Score > p2Score { winner = 1 }
+            else if p2Score > p1Score { winner = 2 }
+            else { winner = 0 }
+        }
+
+        SettingsStore.shared.registerRoundResult(winner: winner)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            self.showResults = true
+        }
     }
 }

@@ -87,25 +87,9 @@ struct HomeView: View {
                         MenuButtonLabel(title: "HIGH SCORES")
                     }
                     .padding(.horizontal, 28)
-                    // Big bottom "Event" button
-                    Button {
-                        showComingSoon = true
-                    } label: {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(.white.opacity(0.08))
-                            .overlay(
-                                Text("EVENT")
-                                    .font(.title3.bold())
-                                    .foregroundStyle(.white)
-                            )
-                            .frame(height: 72)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 20)
-                                    .stroke(.white.opacity(0.15), lineWidth: 1)
-                            )
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 20)
+
+                    // ✅ EVENT button removed
+                    // (Nothing else needed here – layout still looks clean.)
                 }
             }
             .navigationBarHidden(true)

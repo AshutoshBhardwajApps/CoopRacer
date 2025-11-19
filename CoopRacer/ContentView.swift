@@ -167,8 +167,15 @@ struct ContentView: View {
         }
         .onChange(of: coordinator.raceStarted) { started in
             if started {
-                // (Box-car GameScene has no engine hooks; we just do the GO tail.)
+                // GO tail
                 sounder.playGoTail(tail: 0.5)
+
+                // ✅ Keep BGM muted during countdown, then fade it in after GO
+                BGM.shared.setVolume(0.0, fadeDuration: 0.0)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    // Gentle fade into gameplay volume
+                    BGM.shared.setVolume(0.20, fadeDuration: 0.8)
+                }
             } else {
                 sounder.stop()
             }
@@ -206,7 +213,9 @@ struct ContentView: View {
                     createScenes(for: geo.size)
                 }
                 resetRound(playTick3: true, recreateScenes: false)
-                BGM.shared.play(volume: 0.20)
+
+                // ✅ Start BGM at zero so only countdown plays initially
+                BGM.shared.play(volume: 0.0)
             }
             .onChange(of: geo.size) { newSize in
                 // Rebuild scenes only on meaningful size changes

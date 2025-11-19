@@ -2,22 +2,25 @@ import SpriteKit
 
 final class GameScene: SKScene {
     enum Side { case left, right }
+
     // === Car appearance toggle ===
     private let chosenCarPNG: String
     private let USE_IMAGE_CAR = true            // <- set to false to go back to drawn car
-    private let LEFT_CAR_IMAGE  = "Audi"        // your red PNG filename (no extension)
-    private let RIGHT_CAR_IMAGE = "Audi"      // your other PNG (change if you like)
-    // Use the PNG car instead of the procedural drawing
+    private let LEFT_CAR_IMAGE  = "Audi"
+    private let RIGHT_CAR_IMAGE = "Audi"
     private let usePNGCar = true
+
     // Match the old box-car footprint exactly (30×50 points)
     private let CAR_BASE_SIZE = CGSize(width: 30, height: 50)
-    // Optional global scale if you want it a bit larger/smaller later
-    private let CAR_SCALE: CGFloat = 1.0   // try 1.3 if you want bigger
+    private let CAR_SCALE: CGFloat = 1.0
 
     // Injected
     private let side: Side
     private weak var input: PlayerInput?
     private weak var coordinator: GameCoordinator?
+
+    // Difficulty (pulled from SettingsStore at init time)
+    private let difficulty: SpeedLevel
 
     // Visual
     private var roadNode = SKShapeNode()
@@ -41,23 +44,29 @@ final class GameScene: SKScene {
     private var laneWidth: CGFloat { playableRect.width * 0.40 }
 
     // Full-width movement (tiny edge pad so wheels don’t clip)
-    private var carEdgePad: CGFloat { 15 }   // tweak 12–16 to taste
+    private var carEdgePad: CGFloat { 15 }
     private var roadMinX: CGFloat { playableRect.minX + carEdgePad }
     private var roadMaxX: CGFloat { playableRect.maxX - carEdgePad }
 
     // Motion
-    private var baseSpeed: CGFloat = 280       // a touch faster so slowdowns feel obvious
+    private var baseSpeed: CGFloat = 280       // base, will be tuned by difficulty
     private var speedMultiplier: CGFloat = 1   // eased after bumps
     private var lastUpdate: TimeInterval = 0
+    private var elapsedRaceTime: TimeInterval = 0   // tracks how long this race has been running
 
     // Obstacles
-    private var spawnAccum: TimeInterval = 0
-    private var spawnInterval: TimeInterval = 1.5
     private var obstacles: [SKNode] = []
+
+    // Distance-based obstacle spawning
+    private var distanceSinceLastSpawn: CGFloat = 0
+    private var baseObstacleSpacing: CGFloat = 260    // tuned per difficulty
 
     // Distance bookkeeping (finish sync + progress bar)
     private var totalTrackDistance: CGFloat = 0
     private var distanceAdvanced: CGFloat = 0
+
+    // Whether this lane has already told the coordinator it reached finish
+    private var hasSignalledFinish: Bool = false
 
     // Slowdown feedback
     private var isRecovering = false
@@ -69,24 +78,30 @@ final class GameScene: SKScene {
     // Audio
     private var engineNode: SKAudioNode?
 
-    // Init
+    // MARK: - Init
+
     init(size: CGSize,
          side: Side,
          input: PlayerInput,
          coordinator: GameCoordinator,
-         carPNG: String)  // <-- NEW
+         carPNG: String)
     {
         self.side = side
         self.input = input
         self.coordinator = coordinator
-        self.chosenCarPNG = carPNG   // save it
+        self.chosenCarPNG = carPNG
+        // Use current selected speed level for this scene
+        self.difficulty = SettingsStore.shared.selectedSpeedLevel
+
         super.init(size: size)
         scaleMode = .resizeFill
         backgroundColor = .black
     }
+
     required init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // MARK: - Scene lifecycle
+
     override func didMove(to view: SKView) {
         removeAllChildren()
         carNode.removeAllChildren()
@@ -103,6 +118,9 @@ final class GameScene: SKScene {
             height: size.height - marginTowardBottom - marginTowardTop
         )
 
+        // Configure baseSpeed & spacing according to difficulty
+        configureBaseSpeed()
+
         // Road (grey so wheels pop)
         roadNode = SKShapeNode(rect: playableRect, cornerRadius: 10)
         roadNode.fillColor = SKColor(white: 0.18, alpha: 1.0)
@@ -117,21 +135,17 @@ final class GameScene: SKScene {
         // Start / Finish (high z so always visible)
         buildCheckeredLines()
 
-        // Car (procedural top-down)
-        // --- Car (PNG or procedural; single placement path) ---
+        // Car (PNG or procedural; single placement path)
         let accent: SKColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
 
-        // --- Car (PNG or procedural; single placement path) ---
         if usePNGCar {
-            // ✅ Use the player’s chosen car from SettingsStore
+            // Use the player’s chosen car from SettingsStore
             let carName = (side == .left)
                 ? SettingsStore.shared.player1Car
                 : SettingsStore.shared.player2Car
 
-            carNode = makePNGCar(textureName: carName) // ✅ keeps raw PNG colors
-
+            carNode = makePNGCar(textureName: carName)
         } else {
-            let accent: SKColor = (side == .left) ? Theme.p1SK : Theme.p2SK
             carNode = makeCar(color: accent)
         }
 
@@ -144,6 +158,7 @@ final class GameScene: SKScene {
         if side == .right { carNode.zRotation = .pi }
         carNode.zPosition = 100
         addChild(carNode)
+
         // Place START just in front of the car (toward driving direction)
         let behindOffset: CGFloat = 28
         if side == .left {
@@ -160,10 +175,13 @@ final class GameScene: SKScene {
         addProgressBar()
         updateProgressFill(ratio: 0)
 
-        // Finish distance: clean 30s run hits finish exactly at t=0
+        // Finish distance: clean 30s run hits finish exactly at t=0 (for a clean run)
         let totalSeconds: CGFloat = 30
         totalTrackDistance = baseSpeed * totalSeconds
         distanceAdvanced = 0
+        distanceSinceLastSpawn = 0
+        hasSignalledFinish = false
+
         if side == .left {
             finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + totalTrackDistance)
         } else {
@@ -178,9 +196,9 @@ final class GameScene: SKScene {
 
         // Reset
         lastUpdate = 0
-        spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
+        elapsedRaceTime = 0
         layoutDashes() // initial placement
         wasPaused = false
     }
@@ -189,8 +207,27 @@ final class GameScene: SKScene {
         if view != nil { didMove(to: view!) }
     }
 
-    // MARK: - Car builder (procedural top-down car, no assets)
+    // MARK: - Difficulty setup
+
+    private func configureBaseSpeed() {
+        switch difficulty {
+        case .easy:
+            baseSpeed = 260
+            baseObstacleSpacing = 260   // gentle spacing
+        case .medium:
+            baseSpeed = 300
+            baseObstacleSpacing = 220   // a bit denser
+        case .hard:
+            baseSpeed = 340
+            baseObstacleSpacing = 190   // more intense
+        case .insane:
+            baseSpeed = 380
+            baseObstacleSpacing = 160   // chaos
+        }
+    }
+
     // MARK: - Car builder (PNG or procedural)
+
     private func makeCar(color: SKColor) -> SKNode {
         let targetW = CAR_BASE_SIZE.width  * CAR_SCALE
         let targetH = CAR_BASE_SIZE.height * CAR_SCALE
@@ -215,7 +252,6 @@ final class GameScene: SKScene {
 
             let sprite = SKSpriteNode(texture: tex, size: CGSize(width: finalW, height: finalH))
             sprite.zPosition = 100
-            // If your PNGs are already colored, do not tint:
             sprite.colorBlendFactor = 0.0
             return sprite
         } else {
@@ -223,6 +259,8 @@ final class GameScene: SKScene {
             let car = SKNode()
 
             // Body
+            let targetW = CAR_BASE_SIZE.width  * CAR_SCALE
+            let targetH = CAR_BASE_SIZE.height * CAR_SCALE
             let body = SKShapeNode(rectOf: CGSize(width: targetW, height: targetH), cornerRadius: 6)
             body.fillColor = color
             body.strokeColor = .black
@@ -272,7 +310,9 @@ final class GameScene: SKScene {
             return car
         }
     }
+
     // MARK: - Builders
+
     private func buildDashes() {
         dashNodes.forEach { $0.removeFromParent() }
         dashNodes.removeAll()
@@ -343,6 +383,7 @@ final class GameScene: SKScene {
         addChild(startLine)
         addChild(finishLine)
     }
+
     private func makePNGCar(textureName: String, tint: SKColor? = nil) -> SKSpriteNode {
         let tex = SKTexture(imageNamed: textureName)
         tex.filteringMode = .linear
@@ -362,6 +403,7 @@ final class GameScene: SKScene {
         }
         return node
     }
+
     private func addProgressBar() {
         let barWidth: CGFloat = 8
         let barHeight: CGFloat = playableRect.height * 0.9
@@ -395,6 +437,7 @@ final class GameScene: SKScene {
         progressFill.fillColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
         progressFill.strokeColor = .clear
     }
+
     // Call this when a new round starts (if you keep the same scene instance)
     func prepareForNewRound() {
         // Clear obstacles
@@ -403,10 +446,12 @@ final class GameScene: SKScene {
 
         // Reset timers/state
         lastUpdate = 0
-        spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
         distanceAdvanced = 0
+        elapsedRaceTime = 0
+        distanceSinceLastSpawn = 0
+        hasSignalledFinish = false
         updateProgressFill(ratio: 0)
         layoutDashes()
 
@@ -443,7 +488,9 @@ final class GameScene: SKScene {
             finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
         }
     }
+
     // MARK: - Vignette helper
+
     private func ensureSlowVignette() {
         guard slowVignette == nil else { return }
         // Cover only the gameplay rect so control bars stay clean
@@ -459,32 +506,114 @@ final class GameScene: SKScene {
     }
 
     // MARK: - Obstacles
+
     private func spawnObstacle() {
-        enum O { case cone, box, tumbleweed, squirrel }
-        let t: O = [.cone, .box, .tumbleweed, .squirrel].randomElement()!
+        // Expanded obstacle set
+        enum O {
+            case cone
+            case box
+            case tumbleweed
+            case squirrel
+            case pothole
+            case rock
+            case oilSlick
+            case slowTruck
+        }
+
+        // Pick which obstacles are allowed per difficulty
+        let pool: [O]
+        switch difficulty {
+        case .easy:
+            // Gentle mix
+            pool = [.cone, .box, .tumbleweed, .squirrel]
+        case .medium:
+            // Slightly more intense
+            pool = [.cone, .box, .tumbleweed, .squirrel, .pothole, .rock]
+        case .hard:
+            // Busier + trickier shapes
+            pool = [.cone, .box, .tumbleweed, .squirrel, .pothole, .rock, .oilSlick]
+        case .insane:
+            // Everything, including wider “truck” block
+            pool = [.cone, .box, .tumbleweed, .squirrel, .pothole, .rock, .oilSlick, .slowTruck]
+        }
+
+        let t: O = pool.randomElement()!
 
         let node: SKNode
         switch t {
         case .cone:
+            // Traffic cone (triangle)
             let p = CGMutablePath()
-            p.move(to: CGPoint(x: -8, y: -12)); p.addLine(to: CGPoint(x: 8, y: -12)); p.addLine(to: CGPoint(x: 0, y: 12)); p.closeSubpath()
+            p.move(to: CGPoint(x: -8, y: -12))
+            p.addLine(to: CGPoint(x:  8, y: -12))
+            p.addLine(to: CGPoint(x:  0, y:  12))
+            p.closeSubpath()
             let cone = SKShapeNode(path: p)
-            cone.fillColor = .orange; cone.strokeColor = .white.withAlphaComponent(0.6)
+            cone.fillColor = .orange
+            cone.strokeColor = .white.withAlphaComponent(0.6)
             node = cone
+
         case .box:
+            // Crate
             let box = SKShapeNode(rectOf: CGSize(width: 18, height: 18), cornerRadius: 3)
             box.fillColor = SKColor(red: 0.75, green: 0.55, blue: 0.30, alpha: 1.0)
             box.strokeColor = .clear
             node = box
+
         case .tumbleweed:
+            // Round tumbleweed
             let weed = SKShapeNode(circleOfRadius: 10)
             weed.fillColor = SKColor(red: 0.65, green: 0.50, blue: 0.30, alpha: 1.0)
             weed.strokeColor = .white.withAlphaComponent(0.2)
             node = weed
+
         case .squirrel:
+            // Emoji squirrel
             let label = SKLabelNode(text: "🐿️")
             label.fontSize = 22
             node = label
+
+        case .pothole:
+            // Dark pothole in the road
+            let hole = SKShapeNode(circleOfRadius: 11)
+            hole.fillColor = SKColor(white: 0.05, alpha: 1.0)
+            hole.strokeColor = SKColor(white: 0.6, alpha: 0.5)
+            hole.lineWidth = 1.5
+            node = hole
+
+        case .rock:
+            // Small rock / boulder
+            let rock = SKShapeNode(circleOfRadius: 9)
+            rock.fillColor = SKColor(white: 0.55, alpha: 1.0)
+            rock.strokeColor = SKColor(white: 0.2, alpha: 0.7)
+            rock.lineWidth = 1.2
+            node = rock
+
+        case .oilSlick:
+            // Slippery oil patch (wider + low contrast)
+            let slickSize = CGSize(width: 32, height: 14)
+            let slick = SKShapeNode(rectOf: slickSize, cornerRadius: 6)
+            slick.fillColor = SKColor(red: 0.02, green: 0.02, blue: 0.08, alpha: 1.0)
+            slick.strokeColor = SKColor(white: 1.0, alpha: 0.15)
+            slick.lineWidth = 1
+            node = slick
+
+        case .slowTruck:
+            // Wider “truck” style block (acts like a big roadblock)
+            let truckSize = CGSize(width: 26, height: 30)
+            let truck = SKShapeNode(rectOf: truckSize, cornerRadius: 4)
+            truck.fillColor = SKColor(red: 0.20, green: 0.40, blue: 0.80, alpha: 1.0)
+            truck.strokeColor = SKColor(white: 0.1, alpha: 0.9)
+            truck.lineWidth = 1.5
+
+            // Tiny cab hint on top
+            let cab = SKShapeNode(rectOf: CGSize(width: 18, height: 10), cornerRadius: 3)
+            cab.fillColor = SKColor(white: 0.9, alpha: 0.9)
+            cab.strokeColor = .clear
+            cab.position = CGPoint(x: 0, y: truckSize.height * 0.15)
+            truck.addChild(cab)
+
+            node = truck
         }
 
         node.name = "obstacle"
@@ -504,6 +633,7 @@ final class GameScene: SKScene {
     }
 
     // MARK: - Update
+
     override func update(_ currentTime: TimeInterval) {
         // --- Delta time ---
         if lastUpdate == 0 { lastUpdate = currentTime; return }
@@ -522,7 +652,7 @@ final class GameScene: SKScene {
             wasPaused = false
         }
 
-        // --- Let players steer laterally even before the race starts ---
+        // Allow lateral movement even before race starts
         applyLateralMovement(dt: dt)
 
         // === COUNTDOWN (not started yet) ===
@@ -540,21 +670,94 @@ final class GameScene: SKScene {
             return
         }
 
-        // If the round ended after we started, stop updates (leave the final bar filled)
+        // If this lane already finished, keep it frozen on the checker
+        if hasSignalledFinish {
+            return
+        }
+
+        // If the round ended after we started (other lane finished), stop updates
         if coordinator?.roundActive == false {
             stopEngineLoop()
             return
         }
 
         // === ACTIVE RACE ===
+
+        // Track elapsed race time for stage difficulty
+        elapsedRaceTime += dt
+
+        // Stage 0/1/2 for [0–10), [10–20), [20–30] seconds-ish
+        let stage = min(2, Int(elapsedRaceTime / 10.0))
+
+        // Per-stage multipliers
+        var stageSpeedBoost: CGFloat = 1.0
+        var stageSpacingScale: CGFloat = 1.0
+
+        switch stage {
+        case 0:
+            stageSpeedBoost = 1.0
+            stageSpacingScale = 1.0
+        case 1:
+            stageSpeedBoost = 1.15   // a bit faster mid-race
+            stageSpacingScale = 0.85 // slightly denser
+        default:
+            stageSpeedBoost = 1.30   // fastest in last stretch
+            stageSpacingScale = 0.70 // most dense
+        }
+
+        // Extra multipliers from selected difficulty
+        let diffBoost: CGFloat
+        let diffSpacingScale: CGFloat
+        switch difficulty {
+        case .easy:
+            diffBoost = 1.0
+            diffSpacingScale = 1.0      // baseline density
+        case .medium:
+            diffBoost = 1.10
+            diffSpacingScale = 0.8      // ~25% more obstacles than Easy
+        case .hard:
+            diffBoost = 1.20
+            diffSpacingScale = 0.6      // ~65% more
+        case .insane:
+            diffBoost = 1.30
+            diffSpacingScale = 0.5      // about 2× Easy density
+        }
+
+        let spacingScale = stageSpacingScale * diffSpacingScale
+
         let worldDir: CGFloat = (side == .left) ? -1.0 : +1.0
-        let speed = baseSpeed * speedMultiplier
+        let speed = baseSpeed * speedMultiplier * stageSpeedBoost * diffBoost
         let dy = worldDir * speed * CGFloat(dt)
 
         // Distance + progress bar
         distanceAdvanced += abs(dy)
         let ratio = min(distanceAdvanced / totalTrackDistance, 1.0)
         updateProgressFill(ratio: ratio)
+
+        // Distance-based obstacle spawning: fair density per track length
+        distanceSinceLastSpawn += abs(dy)
+        let spacing = max(80, baseObstacleSpacing * spacingScale)   // clamp minimum spacing a bit
+
+        while distanceSinceLastSpawn >= spacing {
+            distanceSinceLastSpawn -= spacing
+            spawnObstacle()
+        }
+
+        // ✅ Notify coordinator when this lane reaches the checker, and freeze this lane
+        if !hasSignalledFinish && ratio >= 1.0 {
+            hasSignalledFinish = true
+
+            if side == .left {
+                coordinator?.markFinished(player: 1)
+            } else {
+                coordinator?.markFinished(player: 2)
+            }
+
+            // Stop engine sound for this lane once finished
+            stopEngineLoop()
+            // Keep car sitting at the finish line; no more scrolling for this lane
+            return
+        }
 
         // Center dashed line via PHASE (never flickers)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
@@ -571,14 +774,7 @@ final class GameScene: SKScene {
             startLine.removeFromParent()
         }
 
-        // Spawn & move obstacles + scoring clean passes
-        spawnAccum += dt
-        if spawnAccum >= spawnInterval {
-            spawnAccum = 0
-            spawnInterval = Double.random(in: 1.2...1.8)
-            spawnObstacle()
-        }
-
+        // Move obstacles + scoring clean passes
         var toRemove: [SKNode] = []
         for ob in obstacles {
             ob.position.y += dy
@@ -591,8 +787,10 @@ final class GameScene: SKScene {
                 if !touched {
                     ob.userData?["touched"] = true
                     touched = true
-                    let flash = SKAction.sequence([.fadeAlpha(to: 0.4, duration: 0.05),
-                                                   .fadeAlpha(to: 1.0, duration: 0.15)])
+                    let flash = SKAction.sequence([
+                        .fadeAlpha(to: 0.4, duration: 0.05),
+                        .fadeAlpha(to: 1.0, duration: 0.15)
+                    ])
                     carNode.run(flash)
                     applySmoothPenalty()
                     playCrash()
@@ -662,7 +860,6 @@ final class GameScene: SKScene {
             .fadeAlpha(to: 0.18, duration: 0.20)
         ]))
 
-        // Desaturate car (tint gray)
         // Desaturate car (tint gray) — ONLY for procedural car
         if !usePNGCar {
             carNode.removeAction(forKey: "recoverTint")
