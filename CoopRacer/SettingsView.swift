@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var purchaseManager: PurchaseManager
 
     var body: some View {
         Form {
@@ -51,8 +52,66 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            // MARK: - Sound
+            Section("SOUND") {
+                Toggle("Sound Effects", isOn: $settings.effectsEnabled)
+                Toggle("Background Music", isOn: $settings.musicEnabled)
+            }
+
+            // MARK: - Ads / IAP
+            Section("ADS") {
+                if settings.hasRemovedAds {
+                    Label("Ads removed", systemImage: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                } else {
+                    Button {
+                        Task {
+                            await purchaseManager.buyRemoveAds()
+                        }
+                    } label: {
+                        HStack {
+                            if purchaseManager.isLoading {
+                                ProgressView()
+                            } else {
+                                Text("Remove Ads")
+                            }
+                        }
+                    }
+                    .disabled(purchaseManager.isLoading)
+
+                    Button("Restore Purchases") {
+                        Task {
+                            await purchaseManager.restorePurchases()
+                        }
+                    }
+                    .disabled(purchaseManager.isLoading)
+
+                    if let msg = purchaseManager.errorMessage {
+                        Text(msg)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
         }
         .navigationTitle("Settings")
+        .task {
+            // Load product info when Settings appears
+            await purchaseManager.loadProducts()
+        }
+        // 🔊 Immediate reaction to BACKGROUND MUSIC toggle
+        .onChange(of: settings.musicEnabled) { enabled in
+            Task { @MainActor in
+                if enabled {
+                    // Resume / start loop at a safe volume
+                    BGM.shared.play(volume: 0.24)
+                } else {
+                    // Instantly silence background music without app restart
+                    BGM.shared.stop()
+                }
+            }
+        }
     }
 }
 
@@ -76,24 +135,22 @@ private struct CarGrid: View {
         }
         .padding(.vertical, 6)
     }
-    
+
     /// Maps asset names → clean labels
-      private func displayName(for asset: String) -> String {
-          switch asset {
-          case "Car":
-              return "Car 1"
-          case "Audi":
-              return "Car 2"
-          case "Black_viper", "Viper":
-              return "Car 3"
-          default:
-              // Generic clean-up: remove `_` and capitalize words
-              let cleaned = asset
-                  .replacingOccurrences(of: "_", with: " ")
-              return cleaned.capitalized   // "Mini_truck" → "Mini Truck"
-          }
-      }
-  }
+    private func displayName(for asset: String) -> String {
+        switch asset {
+        case "Car":
+            return "Car 1"
+        case "Audi":
+            return "Car 2"
+        case "Black_viper", "Viper":
+            return "Car 3"
+        default:
+            let cleaned = asset.replacingOccurrences(of: "_", with: " ")
+            return cleaned.capitalized
+        }
+    }
+}
 
 private struct CarThumb: View {
     let assetName: String   // actual asset name used in UIImage / SKTexture
@@ -118,7 +175,7 @@ private struct CarThumb: View {
                     .scaledToFit()
                     .frame(height: 64)
 
-                Text(label)              // 👈 clean label, no underscores
+                Text(label)
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.85))
             }

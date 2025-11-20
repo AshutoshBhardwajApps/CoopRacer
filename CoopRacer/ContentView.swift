@@ -12,7 +12,6 @@ struct ContentView: View {
     @StateObject private var coordinator = GameCoordinator()
 
     private let sounder = CountdownSounder()
-    
 
     // UI state
     @State private var goHomeAfterResults = false
@@ -29,6 +28,11 @@ struct ContentView: View {
     // Ad coordination
     @State private var didTryAdAfterResults = false
 
+    // Convenience
+    private var adsDisabled: Bool {
+        settings.hasRemovedAds
+    }
+
     var body: some View {
         GeometryReader { geo in
             content(geo: geo)
@@ -37,17 +41,23 @@ struct ContentView: View {
         .navigationBarBackButtonHidden(true)
 
         // Keep BGM + game state in sync with interstitials
-       
         .onReceive(NotificationCenter.default.publisher(for: .adWillPresent)) { _ in
             pauseAll()
-            BGM.shared.setVolume(0.0, fadeDuration: 0.15)   // <- hard mute
+            BGM.shared.setVolume(0.0, fadeDuration: 0.15)   // hard mute
         }
 
         .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
-            if !coordinator.showResults && !showPause { resumeAll() }
-            BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // <- restore
-            AdManager.shared.preload()
+            if !coordinator.showResults && !showPause {
+                resumeAll()
+            }
+            BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // restore
+
+            // Only preload next ad if ads are enabled
+            if !adsDisabled {
+                AdManager.shared.preload()
+            }
         }
+
         // Clear any lingering flags when HomeView appears
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("CoopRacer.ResetNavFlag"))) { _ in
             showPause = false
@@ -89,8 +99,8 @@ struct ContentView: View {
         }
         // Results sheet
         .sheet(isPresented: $coordinator.showResults, onDismiss: {
-            // Present the ad after the sheet has fully gone
-            if !didTryAdAfterResults {
+            // Present the ad after the sheet has fully gone (if ads enabled)
+            if !adsDisabled && !didTryAdAfterResults {
                 didTryAdAfterResults = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     AdManager.shared.presentIfAllowed()
@@ -124,9 +134,12 @@ struct ContentView: View {
             }
             .environmentObject(settings) // <- make sure names are available
             .onAppear {
-                AdManager.shared.noteRoundCompleted()
-                AdManager.shared.preload()
-                didTryAdAfterResults = false
+                // Only track ads if enabled
+                if !adsDisabled {
+                    AdManager.shared.noteRoundCompleted()
+                    AdManager.shared.preload()
+                    didTryAdAfterResults = false
+                }
 
                 HighScoresStore.shared.add(
                     p1Name: SettingsStore.shared.player1Name,
@@ -142,7 +155,8 @@ struct ContentView: View {
                 resume: { showPause = false },
                 restart: {
                     showPause = false
-                    resetRound(playTick3: true, recreateScenes: true)
+                    // 🔁 Restart should be a *fresh* round
+                    resetRound(playTick3: true, recreateScenes: false)
                 },
                 goHome: { confirmHome = true }
             )
@@ -161,20 +175,34 @@ struct ContentView: View {
         }
         // Countdown sounds
         .onChange(of: coordinator.startTick) { tick in
+            // Any time a new countdown starts (tick hits 3), hard-mute BGM
+            if tick == 3 {
+                BGM.shared.setVolume(0.0, fadeDuration: 0.10)
+            }
+
             if tick == 3 || tick == 2 || tick == 1 {
-                sounder.playTick(blipLength: 0.18)
+                if settings.effectsEnabled {
+                    sounder.playTick(blipLength: 0.18)
+                }
             }
         }
         .onChange(of: coordinator.raceStarted) { started in
             if started {
-                // GO tail
-                sounder.playGoTail(tail: 0.5)
+                // GO tail (only if effects are enabled)
+                if settings.effectsEnabled {
+                    sounder.playGoTail(tail: 0.5)
+                }
 
-                // ✅ Keep BGM muted during countdown, then fade it in after GO
-                BGM.shared.setVolume(0.0, fadeDuration: 0.0)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                    // Gentle fade into gameplay volume
-                    BGM.shared.setVolume(0.20, fadeDuration: 0.8)
+                // Bring in BGM only if music is enabled
+                if settings.musicEnabled {
+                    // Ensure player exists and starts at zero
+                    BGM.shared.play(volume: 0.0)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        // Gentle fade into gameplay volume
+                        BGM.shared.setVolume(0.20, fadeDuration: 0.8)
+                    }
+                } else {
+                    BGM.shared.stop()
                 }
             } else {
                 sounder.stop()
@@ -183,9 +211,11 @@ struct ContentView: View {
         // Pause/resume tied to sheet & lifecycle
         .onChange(of: showPause) { presented in
             if presented {
-                pauseAll(); BGM.shared.setVolume(0.12, fadeDuration: 0.25)
+                pauseAll()
+                BGM.shared.setVolume(0.12, fadeDuration: 0.25)
             } else if !coordinator.showResults {
-                resumeAll(); BGM.shared.setVolume(0.20, fadeDuration: 0.25)
+                resumeAll()
+                BGM.shared.setVolume(0.20, fadeDuration: 0.25)
             }
         }
         .onChange(of: scenePhase) { phase in
@@ -214,8 +244,12 @@ struct ContentView: View {
                 }
                 resetRound(playTick3: true, recreateScenes: false)
 
-                // ✅ Start BGM at zero so only countdown plays initially
-                BGM.shared.play(volume: 0.0)
+                // Start / stop BGM based on toggle, but at zero volume (countdown owns soundstage)
+                if settings.musicEnabled {
+                    BGM.shared.play(volume: 0.0)
+                } else {
+                    BGM.shared.stop()
+                }
             }
             .onChange(of: geo.size) { newSize in
                 // Rebuild scenes only on meaningful size changes
@@ -243,13 +277,20 @@ struct ContentView: View {
     // MARK: - Reset & Scenes
 
     private func resetRound(playTick3: Bool, recreateScenes: Bool) {
-        resumeAll()
+        // Make sure any old countdown tail stops
+        sounder.stop()
+
+        // Fresh state in coordinator
         coordinator.startRound()
 
+        // Scenes
         if recreateScenes {
             let size = (lastGeoSize == .zero) ? UIScreen.main.bounds.size : lastGeoSize
             createScenes(for: size)
         }
+
+        // Resume scene updates so countdown can run
+        resumeAll()
 
         // Defer one tick so SpriteView attaches and didMove(to:) runs
         DispatchQueue.main.async {
@@ -257,7 +298,11 @@ struct ContentView: View {
             self.rightScene?.prepareForNewRound()
         }
 
-        if playTick3 { sounder.playTick(blipLength: 0.18) }
+        // Ensure BGM is muted during countdown for *every* reset
+        BGM.shared.setVolume(0.0, fadeDuration: 0.0)
+
+        // We no longer manually play a "3" tick here;
+        // countdown SFX are driven entirely by startTick changes.
     }
 
     private func createScenes(for size: CGSize) {
@@ -268,7 +313,7 @@ struct ContentView: View {
                                input: input,
                                coordinator: coordinator,
                                carPNG: settings.player1Car)
-        
+
         rightScene = GameScene(size: half,
                                side: .right,
                                input: input,

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct HomeView: View {
+    @EnvironmentObject var settings: SettingsStore
     @State private var animateCars = false
     @State private var showComingSoon = false
 
@@ -98,8 +99,12 @@ struct HomeView: View {
             // Let ContentView clear any navigation flags when we’re safely back home
             NotificationCenter.default.post(name: Notification.Name("CoopRacer.ResetNavFlag"), object: nil)
 
-            // Start/continue background track for menu
-            BGM.shared.play(volume: 0.24)
+            // Start/continue background track for menu, but only if enabled
+                if settings.musicEnabled {
+                    BGM.shared.play(volume: 0.24)
+                } else {
+                    BGM.shared.play(volume: 0.0)    // keep it running but silent
+                }
 
             // Gentle header car wiggle
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {

@@ -18,81 +18,97 @@ enum SpeedLevel: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-// MARK: - Settings Store
+// MARK: - Settings Store (Pure State, No Audio Calls Here)
 
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
-    
 
-    // Car asset names you already have in the project
+    // Under-the-hood asset names already in the project
     static let carOptions: [String] = [
-        "Audi", "Police", "Mini_truck", "Mini_van",
-        "taxi", "Black_viper", "Car", "Ambulance", "truck"
+        "Car", "Audi", "Black_viper", "Police",
+        "Mini_truck", "Mini_van", "taxi",
+        "Ambulance", "truck"
     ]
 
-    // Player names & cars
+    static func displayName(for assetName: String) -> String {
+        switch assetName {
+        case "Car":          return "Car 1"
+        case "Audi":         return "Car 2"
+        case "Black_viper":  return "Car 3"
+        default:
+            return assetName.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    // MARK: - In-App Purchase
+    static let removeAdsProductID = "coopracer.removeads"
+
+    @Published var hasRemovedAds: Bool {
+        didSet { saveProgress() }
+    }
+
+    // MARK: - Sound Toggles (NO audio calls here!)
+    @Published var musicEnabled: Bool {
+        didSet { saveProgress() }
+    }
+
+    @Published var effectsEnabled: Bool {
+        didSet { saveProgress() }
+    }
+
+    // MARK: - Names & Cars
     @Published var player1Name: String { didSet { saveBasics() } }
     @Published var player2Name: String { didSet { saveBasics() } }
-    @Published var player1Car: String  { didSet { saveBasics() } }
-    @Published var player2Car: String  { didSet { saveBasics() } }
+    @Published var player1Car:  String { didSet { saveBasics() } }
+    @Published var player2Car:  String { didSet { saveBasics() } }
 
-    // Selected speed level (used once unlocked)
+    // MARK: - Speed Levels
     @Published var selectedSpeedLevel: SpeedLevel { didSet { saveProgress() } }
 
-    // Progress towards unlocking speed levels
     @Published private(set) var totalRoundsPlayed: Int
     @Published private(set) var p1WinsTotal: Int
     @Published private(set) var p2WinsTotal: Int
     @Published private(set) var speedLevelsUnlocked: Bool
 
-    // Computed helpers
-    /// How many more rounds needed before the "10 rounds" condition is met.
     var remainingRoundsToUnlock: Int {
         max(0, 10 - totalRoundsPlayed)
     }
 
-    /// Highest win rate between the two players.
     var highestWinRate: Double {
         guard totalRoundsPlayed > 0 else { return 0 }
-        let topWins = max(p1WinsTotal, p2WinsTotal)
-        return Double(topWins) / Double(totalRoundsPlayed)
+        return Double(max(p1WinsTotal, p2WinsTotal)) / Double(totalRoundsPlayed)
     }
 
     // MARK: - Init
-
     private init() {
         let d = UserDefaults.standard
 
-        // Basics
-        self.player1Name = d.string(forKey: "settings.p1.name") ?? "PLAYER 1"
-        self.player2Name = d.string(forKey: "settings.p2.name") ?? "PLAYER 2"
-        self.player1Car  = d.string(forKey: "settings.p1.car")  ?? "Audi"
-        self.player2Car  = d.string(forKey: "settings.p2.car")  ?? "Police"
+        player1Name = d.string(forKey: "settings.p1.name") ?? "PLAYER 1"
+        player2Name = d.string(forKey: "settings.p2.name") ?? "PLAYER 2"
+        player1Car  = d.string(forKey: "settings.p1.car")  ?? "Audi"
+        player2Car  = d.string(forKey: "settings.p2.car")  ?? "Police"
 
-        // Progress / difficulty
-        let storedLevelRaw = d.string(forKey: "settings.speed.level")
-        self.selectedSpeedLevel = SpeedLevel(rawValue: storedLevelRaw ?? "") ?? .easy
+        let storedLevel = d.string(forKey: "settings.speed.level")
+        selectedSpeedLevel = SpeedLevel(rawValue: storedLevel ?? "") ?? .easy
 
-        self.totalRoundsPlayed  = d.integer(forKey: "settings.totalRounds")
-        self.p1WinsTotal        = d.integer(forKey: "settings.p1WinsTotal")
-        self.p2WinsTotal        = d.integer(forKey: "settings.p2WinsTotal")
-        self.speedLevelsUnlocked = d.bool(forKey: "settings.speedUnlocked")
+        totalRoundsPlayed   = d.integer(forKey: "settings.totalRounds")
+        p1WinsTotal         = d.integer(forKey: "settings.p1WinsTotal")
+        p2WinsTotal         = d.integer(forKey: "settings.p2WinsTotal")
+        speedLevelsUnlocked = d.bool(forKey: "settings.speedUnlocked")
+
+        hasRemovedAds = d.bool(forKey: "settings.removeAdsPurchased")
+
+        musicEnabled   = d.object(forKey: "settings.musicEnabled") as? Bool ?? true
+        effectsEnabled = d.object(forKey: "settings.effectsEnabled") as? Bool ?? true
     }
 
     // MARK: - Public API
 
-    /// Call this from GameCoordinator at the end of each round.
-    /// `winner`: 1 = P1, 2 = P2, 0 or nil = tie.
     func registerRoundResult(winner: Int?) {
         totalRoundsPlayed += 1
+        if winner == 1 { p1WinsTotal += 1 }
+        if winner == 2 { p2WinsTotal += 1 }
 
-        if winner == 1 {
-            p1WinsTotal += 1
-        } else if winner == 2 {
-            p2WinsTotal += 1
-        }
-
-        // Unlock condition: at least 10 rounds AND ≥ 90% win rate for one player
         if !speedLevelsUnlocked,
            totalRoundsPlayed >= 10,
            highestWinRate >= 0.9 {
@@ -102,7 +118,10 @@ final class SettingsStore: ObservableObject {
         saveProgress()
     }
 
-    // Optional helper if you ever want to reset progress from a Settings screen
+    func markRemoveAdsPurchased() {
+        hasRemovedAds = true
+    }
+
     func resetProgress() {
         totalRoundsPlayed = 0
         p1WinsTotal = 0
@@ -110,6 +129,10 @@ final class SettingsStore: ObservableObject {
         speedLevelsUnlocked = false
         selectedSpeedLevel = .easy
         saveProgress()
+    }
+
+    func resetPurchasesDebug() {
+        hasRemovedAds = false
     }
 
     // MARK: - Persistence
@@ -129,5 +152,8 @@ final class SettingsStore: ObservableObject {
         d.set(p1WinsTotal,                 forKey: "settings.p1WinsTotal")
         d.set(p2WinsTotal,                 forKey: "settings.p2WinsTotal")
         d.set(speedLevelsUnlocked,         forKey: "settings.speedUnlocked")
+        d.set(hasRemovedAds,               forKey: "settings.removeAdsPurchased")
+        d.set(musicEnabled,                forKey: "settings.musicEnabled")
+        d.set(effectsEnabled,              forKey: "settings.effectsEnabled")
     }
 }

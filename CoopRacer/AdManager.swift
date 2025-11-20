@@ -2,21 +2,21 @@ import Foundation
 import GoogleMobileAds
 import UIKit
 
-
 extension Notification.Name {
     static let adWillPresent = Notification.Name("AdManager.adWillPresent")
     static let adDidDismiss  = Notification.Name("AdManager.adDidDismiss")
 }
+
 @MainActor
 final class AdManager: NSObject, ObservableObject {
     static let shared = AdManager()
 
-    // TEST interstitial (swap for real ID before release)
+    // Test interstitial (swap to real before release)
     private let interstitialID = "ca-app-pub-3940256099942544/4411468910"
 
-    // Gates (tune for prod; set 0 / 1 while testing)
-    private let minGapSeconds: TimeInterval = 0   // 5 min
-    private let minRoundsBetweenAds: Int = 1        // 3 rounds
+    // Gates
+    private let minGapSeconds: TimeInterval = 0
+    private let minRoundsBetweenAds: Int = 1
 
     // State
     private var lastShown: Date? = nil
@@ -25,19 +25,36 @@ final class AdManager: NSObject, ObservableObject {
 
     private override init() { super.init() }
 
-    // MARK: Load
+    // MARK: - Purchase Check (Remove Ads)
+    private var adsDisabled: Bool {
+        SettingsStore.shared.hasRemovedAds
+    }
 
+    // MARK: - Preload
     func preload() {
-        let request = Request()
+        if adsDisabled {
+            print("[AdManager] Ads disabled — skipping preload.")
+            interstitial = nil
+            return
+        }
+
         print("[AdManager] Preload start")
-        InterstitialAd.load(with: interstitialID, request: Request()) { [weak self] ad, error in
+        let request = Request()
+
+        InterstitialAd.load(with: interstitialID, request: request) { [weak self] ad, error in
             guard let self else { return }
+
+            if self.adsDisabled {
+                print("[AdManager] Ads disabled (after load) — discarding loaded ad.")
+                return
+            }
+
             if let ad = ad {
                 ad.fullScreenContentDelegate = self
                 self.interstitial = ad
                 print("[AdManager] ✅ Interstitial loaded & cached")
             } else {
-                print("[AdManager] ❌ Load failed: \(error?.localizedDescription ?? "unknown"); retrying in 10s")
+                print("[AdManager] ❌ Load failed: \(error?.localizedDescription ?? "unknown") — retry in 10s")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
                     self?.preload()
                 }
@@ -45,64 +62,68 @@ final class AdManager: NSObject, ObservableObject {
         }
     }
 
-    // Call when a round ends (e.g., Results appears)
+    // MARK: - Round Completed
     func noteRoundCompleted() {
+        if adsDisabled {
+            print("[AdManager] Ads disabled — not tracking rounds.")
+            return
+        }
         roundsSinceLastAd += 1
         print("[AdManager] Rounds since last ad: \(roundsSinceLastAd)")
     }
 
-    // MARK: Present
+    // MARK: - Present Interstitial
     func presentIfAllowed(completion: ((Bool) -> Void)? = nil) {
-        // 0) App must be active & on main
+
+        if adsDisabled {
+            print("[AdManager] Ads disabled — skipping present.")
+            completion?(false)
+            return
+        }
+
+        // 0) Ensure active app
         guard UIApplication.shared.applicationState == .active else {
-            print("[AdManager] Skip: app not active; retry 0.25s")
+            print("[AdManager] Skip: app not active; retry")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.presentIfAllowed(completion: completion)
             }
             return
         }
-        if !Thread.isMainThread {
-            DispatchQueue.main.async { [weak self] in
-                self?.presentIfAllowed(completion: completion)
-            }
-            return
-        }
 
-        // 1) Round-count gate
+        // 1) Round gate
         guard roundsSinceLastAd >= minRoundsBetweenAds else {
             print("[AdManager] Skip: need \(minRoundsBetweenAds - roundsSinceLastAd) more rounds.")
             completion?(false)
             return
         }
 
-        // 2) Time-gap gate
+        // 2) Time gap
         let now = Date()
         if let last = lastShown, now.timeIntervalSince(last) < minGapSeconds {
-            let remaining = Int(minGapSeconds - now.timeIntervalSince(last))
-            print("[AdManager] Skip: time cap \(remaining)s remaining.")
+            print("[AdManager] Skip: time gap not met.")
             completion?(false)
             return
         }
 
-        // 3) Presenter readiness (use stable anchor; retry if mid-transition)
+        // 3) Presenter available
         guard let rootVC = Self.presenterVC() else {
-            print("[AdManager] Presenter not ready; retry 0.25s")
+            print("[AdManager] Presenter not ready, retry")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.presentIfAllowed(completion: completion)
             }
             return
         }
-        guard rootVC.viewIfLoaded?.window != nil, rootVC.presentedViewController == nil else {
-            print("[AdManager] Presenter busy or off-window; retry 0.25s")
+        guard rootVC.presentedViewController == nil else {
+            print("[AdManager] Presenter busy — retry")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.presentIfAllowed(completion: completion)
             }
             return
         }
 
-        // 4) Need a cached ad
+        // 4) Ensure ad cached
         guard let ad = interstitial else {
-            print("[AdManager] Skip: interstitial not ready. Preloading…")
+            print("[AdManager] Not ready — preloading now.")
             preload()
             completion?(false)
             return
@@ -112,28 +133,32 @@ final class AdManager: NSObject, ObservableObject {
         print("[AdManager] Presenting interstitial…")
         ad.present(from: rootVC)
 
-        // 6) Reset & warm next
+        // Reset
         lastShown = now
         roundsSinceLastAd = 0
         interstitial = nil
+
+        // Preload next
         preload()
 
-        // Report: ad was shown
         completion?(true)
     }
-    // MARK: Presenter helpers
+
+    // MARK: - Presenter helpers
 
     private static func presenterVC() -> UIViewController? {
         if let vc = AdPresenter.holder, vc.viewIfLoaded?.window != nil {
             return vc
         }
-        // Fallback to top-most
+
         let scenes = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }
+
         let root = scenes.first?
             .windows.first(where: { $0.isKeyWindow })?
             .rootViewController
+
         return topViewController(base: root)
     }
 
@@ -141,7 +166,8 @@ final class AdManager: NSObject, ObservableObject {
         if let nav = base as? UINavigationController {
             return topViewController(base: nav.visibleViewController)
         }
-        if let tab = base as? UITabBarController, let selected = tab.selectedViewController {
+        if let tab = base as? UITabBarController,
+           let selected = tab.selectedViewController {
             return topViewController(base: selected)
         }
         if let presented = base?.presentedViewController {
@@ -151,19 +177,17 @@ final class AdManager: NSObject, ObservableObject {
     }
 }
 
-// MARK: - Full-screen content delegate (diagnostics)
+// MARK: - Ad Delegate
+
 extension AdManager: FullScreenContentDelegate {
     func adWillPresentFullScreenContent(_ ad: any FullScreenPresentingAd) {
         print("[AdManager] ▶️ adWillPresentFullScreenContent")
         NotificationCenter.default.post(name: .adWillPresent, object: nil)
     }
 
-    // v12+: adDidPresent... is unavailable/removed
-
     func ad(_ ad: any FullScreenPresentingAd,
             didFailToPresentFullScreenContentWithError error: Error) {
-        print("[AdManager] ❌ didFailToPresent: \(error.localizedDescription)")
-        // Treat as dismissed to be safe:
+        print("[AdManager] ❌ Failed to present: \(error.localizedDescription)")
         NotificationCenter.default.post(name: .adDidDismiss, object: nil)
     }
 
@@ -173,10 +197,10 @@ extension AdManager: FullScreenContentDelegate {
     }
 
     func adDidRecordImpression(_ ad: any FullScreenPresentingAd) {
-        print("[AdManager] 👁 adDidRecordImpression")
+        print("[AdManager] 👁 Impression")
     }
 
     func adDidRecordClick(_ ad: any FullScreenPresentingAd) {
-        print("[AdManager] 🖱 adDidRecordClick")
+        print("[AdManager] 🖱 Click")
     }
 }

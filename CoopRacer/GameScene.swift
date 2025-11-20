@@ -48,6 +48,9 @@ final class GameScene: SKScene {
     private var roadMinX: CGFloat { playableRect.minX + carEdgePad }
     private var roadMaxX: CGFloat { playableRect.maxX - carEdgePad }
 
+    // Remember original spawn Y so restarts go back to true start
+    private var initialCarY: CGFloat = 0
+
     // Motion
     private var baseSpeed: CGFloat = 280       // base, will be tuned by difficulty
     private var speedMultiplier: CGFloat = 1   // eased after bumps
@@ -55,11 +58,9 @@ final class GameScene: SKScene {
     private var elapsedRaceTime: TimeInterval = 0   // tracks how long this race has been running
 
     // Obstacles
+    private var spawnAccum: TimeInterval = 0
+    private var spawnInterval: TimeInterval = 1.5
     private var obstacles: [SKNode] = []
-
-    // Distance-based obstacle spawning
-    private var distanceSinceLastSpawn: CGFloat = 0
-    private var baseObstacleSpacing: CGFloat = 260    // tuned per difficulty
 
     // Distance bookkeeping (finish sync + progress bar)
     private var totalTrackDistance: CGFloat = 0
@@ -77,6 +78,7 @@ final class GameScene: SKScene {
 
     // Audio
     private var engineNode: SKAudioNode?
+    private var engineStarted: Bool = false   // <- NEW: track if engine is running
 
     // MARK: - Init
 
@@ -118,7 +120,7 @@ final class GameScene: SKScene {
             height: size.height - marginTowardBottom - marginTowardTop
         )
 
-        // Configure baseSpeed & spacing according to difficulty
+        // Configure baseSpeed according to difficulty (Easy/Medium/Hard/Insane)
         configureBaseSpeed()
 
         // Road (grey so wheels pop)
@@ -155,6 +157,8 @@ final class GameScene: SKScene {
             : playableRect.maxY - playableRect.height * 0.18
 
         carNode.position = CGPoint(x: playableRect.midX, y: carY)
+        initialCarY = carY     // <- remember for restarts
+
         if side == .right { carNode.zRotation = .pi }
         carNode.zPosition = 100
         addChild(carNode)
@@ -179,7 +183,6 @@ final class GameScene: SKScene {
         let totalSeconds: CGFloat = 30
         totalTrackDistance = baseSpeed * totalSeconds
         distanceAdvanced = 0
-        distanceSinceLastSpawn = 0
         hasSignalledFinish = false
 
         if side == .left {
@@ -188,14 +191,15 @@ final class GameScene: SKScene {
             finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
         }
 
-        // Audio (optional files)
-        startEngineLoop()
+        // NOTE: we DO NOT start engine here anymore.
+        engineStarted = false
 
         // Vignette overlay (over gameplay rect)
         ensureSlowVignette()
 
         // Reset
         lastUpdate = 0
+        spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
         elapsedRaceTime = 0
@@ -213,16 +217,12 @@ final class GameScene: SKScene {
         switch difficulty {
         case .easy:
             baseSpeed = 260
-            baseObstacleSpacing = 260   // gentle spacing
         case .medium:
             baseSpeed = 300
-            baseObstacleSpacing = 220   // a bit denser
         case .hard:
             baseSpeed = 340
-            baseObstacleSpacing = 190   // more intense
         case .insane:
             baseSpeed = 380
-            baseObstacleSpacing = 160   // chaos
         }
     }
 
@@ -446,16 +446,28 @@ final class GameScene: SKScene {
 
         // Reset timers/state
         lastUpdate = 0
+        spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
-        distanceAdvanced = 0
         elapsedRaceTime = 0
-        distanceSinceLastSpawn = 0
+        distanceAdvanced = 0
         hasSignalledFinish = false
+        isRecovering = false
+
+        // Reset car to original starting lane center
+        carNode.removeAllActions()
+        carNode.position = CGPoint(x: playableRect.midX, y: initialCarY)
+        carNode.zRotation = (side == .right) ? .pi : 0
+
+        // Progress bar back to 0
         updateProgressFill(ratio: 0)
+
+        // Dashes back to base placement
         layoutDashes()
 
         // --- Start line: recreate if nil, otherwise ensure it's in the scene
+        let behind: CGFloat = 28
+
         if startLine == nil {
             startLine = checkered(width: playableRect.width * 0.8, height: 18)
             startLine.zPosition = 60
@@ -464,8 +476,6 @@ final class GameScene: SKScene {
             addChild(startLine)
         }
 
-        // Put the start line back behind the car for the next countdown
-        let behind: CGFloat = 28
         if side == .left {
             startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
         } else {
@@ -487,6 +497,17 @@ final class GameScene: SKScene {
         } else {
             finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
         }
+
+        // Make sure vignette is invisible at round start
+        slowVignette?.removeAllActions()
+        slowVignette?.alpha = 0.0
+
+        // Engine back to normal volume (if currently attached)
+        engineNode?.run(.changeVolume(to: 0.45, duration: 0.0))
+
+        // 🔁 Engine reset for new round
+        engineStarted = false
+        stopEngineLoop()
     }
 
     // MARK: - Vignette helper
@@ -644,19 +665,30 @@ final class GameScene: SKScene {
         if coordinator?.isPaused == true {
             if !wasPaused {
                 stopEngineLoop()
+                engineStarted = false
                 wasPaused = true
             }
             return
         } else if wasPaused {
-            startEngineLoop()
+            // Only resume engine if race is actually running
+            if coordinator?.raceStarted == true {
+                startEngineLoop()
+                engineStarted = true
+            }
             wasPaused = false
         }
 
         // Allow lateral movement even before race starts
         applyLateralMovement(dt: dt)
 
-        // === COUNTDOWN (not started yet) ===
+        // === COUNTDOWN (race not started yet) ===
         if coordinator?.raceStarted != true {
+            // Ensure engines are OFF during countdown
+            if engineStarted {
+                stopEngineLoop()
+                engineStarted = false
+            }
+
             // Keep the start line BEHIND the car (car sits visually on top)
             let behind: CGFloat = 28
             if side == .left {
@@ -675,55 +707,62 @@ final class GameScene: SKScene {
             return
         }
 
-        // If the round ended after we started (other lane finished), stop updates
+        // If the round ended after we started (timer or other lane), stop updates
         if coordinator?.roundActive == false {
             stopEngineLoop()
+            engineStarted = false
             return
         }
 
         // === ACTIVE RACE ===
 
+        // Start engine loop once when race actually starts
+        if !engineStarted {
+            startEngineLoop()
+            engineStarted = true
+        }
+
         // Track elapsed race time for stage difficulty
         elapsedRaceTime += dt
 
-        // Stage 0/1/2 for [0–10), [10–20), [20–30] seconds-ish
+        // Stage 0/1/2 for [0–10), [10–20), [20–30] seconds
         let stage = min(2, Int(elapsedRaceTime / 10.0))
 
-        // Per-stage multipliers
+        // Per-stage multipliers (ramp every 10s)
         var stageSpeedBoost: CGFloat = 1.0
-        var stageSpacingScale: CGFloat = 1.0
+        var stageSpawnScale: Double = 1.0
 
         switch stage {
         case 0:
             stageSpeedBoost = 1.0
-            stageSpacingScale = 1.0
+            stageSpawnScale = 1.0
         case 1:
             stageSpeedBoost = 1.15   // a bit faster mid-race
-            stageSpacingScale = 0.85 // slightly denser
+            stageSpawnScale = 0.85   // spawn slightly more often
         default:
-            stageSpeedBoost = 1.30   // fastest in last stretch
-            stageSpacingScale = 0.70 // most dense
+            stageSpeedBoost = 1.30   // fastest in last 10s
+            stageSpawnScale = 0.70   // most obstacles
         }
 
         // Extra multipliers from selected difficulty
         let diffBoost: CGFloat
-        let diffSpacingScale: CGFloat
+        let diffSpawnScale: Double
         switch difficulty {
         case .easy:
             diffBoost = 1.0
-            diffSpacingScale = 1.0      // baseline density
+            diffSpawnScale = 1.0        // baseline density
         case .medium:
             diffBoost = 1.10
-            diffSpacingScale = 0.8      // ~25% more obstacles than Easy
+            diffSpawnScale = 0.65       // ~35% more obstacles than Easy
         case .hard:
             diffBoost = 1.20
-            diffSpacingScale = 0.6      // ~65% more
+            diffSpawnScale = 0.45       // roughly 2× Easy density
         case .insane:
             diffBoost = 1.30
-            diffSpacingScale = 0.5      // about 2× Easy density
+            diffSpawnScale = 0.35       // chaos: lots of obstacles
         }
 
-        let spacingScale = stageSpacingScale * diffSpacingScale
+        let combinedSpawnScale = stageSpawnScale * diffSpawnScale
 
         let worldDir: CGFloat = (side == .left) ? -1.0 : +1.0
         let speed = baseSpeed * speedMultiplier * stageSpeedBoost * diffBoost
@@ -733,15 +772,6 @@ final class GameScene: SKScene {
         distanceAdvanced += abs(dy)
         let ratio = min(distanceAdvanced / totalTrackDistance, 1.0)
         updateProgressFill(ratio: ratio)
-
-        // Distance-based obstacle spawning: fair density per track length
-        distanceSinceLastSpawn += abs(dy)
-        let spacing = max(80, baseObstacleSpacing * spacingScale)   // clamp minimum spacing a bit
-
-        while distanceSinceLastSpawn >= spacing {
-            distanceSinceLastSpawn -= spacing
-            spawnObstacle()
-        }
 
         // ✅ Notify coordinator when this lane reaches the checker, and freeze this lane
         if !hasSignalledFinish && ratio >= 1.0 {
@@ -755,6 +785,7 @@ final class GameScene: SKScene {
 
             // Stop engine sound for this lane once finished
             stopEngineLoop()
+            engineStarted = false
             // Keep car sitting at the finish line; no more scrolling for this lane
             return
         }
@@ -774,7 +805,16 @@ final class GameScene: SKScene {
             startLine.removeFromParent()
         }
 
-        // Move obstacles + scoring clean passes
+        // Spawn & move obstacles + scoring clean passes
+        spawnAccum += dt
+        if spawnAccum >= spawnInterval {
+            spawnAccum = 0
+            // Slightly faster base rhythm, then scaled by difficulty + stage
+            let baseInterval = Double.random(in: 0.9...1.4)   // was 1.2...1.8
+            spawnInterval = baseInterval * combinedSpawnScale
+            spawnObstacle()
+        }
+
         var toRemove: [SKNode] = []
         for ob in obstacles {
             ob.position.y += dy
@@ -905,7 +945,11 @@ final class GameScene: SKScene {
 
     // MARK: - Sounds
     private func startEngineLoop() {
+        // Respect effects toggle
+        guard SettingsStore.shared.effectsEnabled else { return }
+
         let name = (side == .left) ? "engine_loop_p1" : "engine_loop_p2"
+
         if Bundle.main.url(forResource: name, withExtension: "mp3") != nil {
             let engine = SKAudioNode(fileNamed: "\(name).mp3")
             engine.autoplayLooped = true
@@ -924,6 +968,8 @@ final class GameScene: SKScene {
     }
 
     private func playCrash() {
+        guard SettingsStore.shared.effectsEnabled else { return }
+
         if Bundle.main.url(forResource: "crash", withExtension: "wav") != nil {
             run(.playSoundFileNamed("crash.wav", waitForCompletion: false))
         } else if Bundle.main.url(forResource: "crash", withExtension: "mp3") != nil {
