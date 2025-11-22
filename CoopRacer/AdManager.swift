@@ -11,9 +11,17 @@ extension Notification.Name {
 final class AdManager: NSObject, ObservableObject {
     static let shared = AdManager()
 
+    // Use test unit in Debug, real unit in Release
+      #if DEBUG
+      // ✅ Google official test interstitial
+      private let interstitialID = "ca-app-pub-3940256099942544/4411468910"
+      #else
+      // ✅ Your real production interstitial ID
+    private let interstitialID = "ca-app-pub-2320635595451132/37805247221"
+      #endif
     // ✅ Production interstitial unit ID (CoopRacer)
     // Old test ID was: "ca-app-pub-3940256099942544/4411468910"
-    private let interstitialID = "ca-app-pub-2320635595451132/37805247221"
+   
 
     // Gates
     private let minGapSeconds: TimeInterval = 0
