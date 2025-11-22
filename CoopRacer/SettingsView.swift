@@ -94,6 +94,18 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            // MARK: - About / Credits
+            Section("ABOUT") {
+                NavigationLink {
+                    CreditsView()
+                } label: {
+                    HStack {
+                        Image(systemName: "info.circle")
+                        Text("Credits")
+                    }
+                }
+            }
         }
         .navigationTitle("Settings")
         .task {
@@ -124,7 +136,6 @@ private struct CarGrid: View {
     var body: some View {
         LazyVGrid(columns: columns, spacing: 12) {
             ForEach(SettingsStore.carOptions, id: \.self) { assetName in
-
                 let label = displayName(for: assetName)
 
                 CarThumb(assetName: assetName,
