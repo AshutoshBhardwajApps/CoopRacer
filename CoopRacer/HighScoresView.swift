@@ -1,41 +1,62 @@
 import SwiftUI
 
 struct HighScoresView: View {
-    @EnvironmentObject var scores: HighScoresStore
+    @EnvironmentObject var twoPlayer: HighScoresStore
+    @EnvironmentObject var solo: SoloHighScoresStore
 
     var body: some View {
-        List {
-            if scores.scores.isEmpty {
-                Text("No scores yet. Play a round!")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(scores.scores) { s in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(s.player1Name) vs \(s.player2Name)")
-                                .font(.headline)
-                            Text(s.date.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+        NavigationStack {
+            List {
+
+                // MARK: - Single Player
+                Section("Single Player") {
+                    if solo.scores.isEmpty {
+                        Text("No single player scores yet.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(solo.scores) { entry in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(entry.playerName)
+                                        .font(.headline)
+                                    Text(entry.date, style: .date)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text("\(entry.score)")
+                                    .font(.title3.monospacedDigit())
+                            }
                         }
-                        Spacer()
-                        Text("\(s.player1Score) – \(s.player2Score)")
-                            .font(.title3.monospacedDigit())
-                            .bold()
+                        .onDelete(perform: solo.delete)
                     }
-                    .padding(.vertical, 4)
                 }
-                .onDelete(perform: scores.delete)   // swipe to delete
-            }
-        }
-        .navigationTitle("High Scores")
-        .toolbar {
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                if !scores.scores.isEmpty {
-                    EditButton()
-                    Button("Clear") { scores.clear() }
+
+                // MARK: - Two Player
+                Section("Two Player") {
+                    if twoPlayer.scores.isEmpty {
+                        Text("No two-player scores yet.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(twoPlayer.scores) { entry in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text("\(entry.player1Name) vs \(entry.player2Name)")
+                                        .font(.headline)
+                                    Text(entry.date, style: .date)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text("\(entry.player1Score) : \(entry.player2Score)")
+                                    .font(.title3.monospacedDigit())
+                            }
+                        }
+                        .onDelete(perform: twoPlayer.delete)
+                    }
                 }
             }
+            .navigationTitle("High Scores")
         }
     }
 }

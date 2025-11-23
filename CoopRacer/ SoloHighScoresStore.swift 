@@ -1,0 +1,69 @@
+//
+//  Untitled.swift
+//  CoopRacer
+//
+//  Created by Ashutosh Bhardwaj on 2025-11-22.
+//
+import Foundation
+import SwiftUI
+
+struct SoloHighScore: Identifiable, Codable {
+    let id: UUID
+    let date: Date
+    let playerName: String
+    let score: Int
+}
+
+@MainActor
+final class SoloHighScoresStore: ObservableObject {
+    static let shared = SoloHighScoresStore()
+
+    @Published private(set) var scores: [SoloHighScore] = []
+
+    private init() { load() }
+
+    func add(playerName: String, score: Int) {
+        let new = SoloHighScore(
+            id: UUID(),
+            date: Date(),
+            playerName: playerName,
+            score: score
+        )
+
+        scores.insert(new, at: 0)
+
+        if scores.count > 10 {
+            scores.removeLast(scores.count - 10)
+        }
+
+        save()
+    }
+
+    func clear() {
+        scores.removeAll()
+        save()
+    }
+
+    func delete(at offsets: IndexSet) {
+        scores.remove(atOffsets: offsets)
+        save()
+    }
+
+    // MARK: - Persistence
+    private let key = "solo.scores.v1"
+
+    private func load() {
+        let d = UserDefaults.standard
+        guard let data = d.data(forKey: key) else { return }
+        if let decoded = try? JSONDecoder().decode([SoloHighScore].self, from: data) {
+            self.scores = decoded
+        }
+    }
+
+    private func save() {
+        let d = UserDefaults.standard
+        if let data = try? JSONEncoder().encode(scores) {
+            d.set(data, forKey: key)
+        }
+    }
+}

@@ -1,26 +1,24 @@
 import SwiftUI
 
-/// A large tappable/holdable pad that sets a binding TRUE while pressed, FALSE when released.
 struct HoldPad: View {
     @Binding var isPressed: Bool
-    var title: String
-    var flipText: Bool = false  // rotate just the label for the top player
+    let title: String
+    var flipText: Bool = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
-                .background(RoundedRectangle(cornerRadius: 14).fill(.primary.opacity(0.05)))
-            Text(title)
-                .font(.system(size: 18, weight: .bold))
-                .rotationEffect(.degrees(flipText ? 180 : 0))
-        }
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in if !isPressed { isPressed = true } }
-                .onEnded { _ in isPressed = false }
-        )
-        .frame(height: 56)
+        Text(title)
+            .font(.caption)
+            .foregroundColor(.white.opacity(0.7))
+            .rotationEffect(.degrees(flipText ? 180 : 0))     // << flip label if needed
+            .padding(10)
+            .frame(maxWidth: .infinity)
+            .background(isPressed ? Color.white.opacity(0.25) : Color.white.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in isPressed = true }
+                    .onEnded { _ in isPressed = false }
+            )
     }
 }

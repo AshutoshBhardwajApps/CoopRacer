@@ -3,7 +3,6 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject var settings: SettingsStore
     @State private var animateCars = false
-    @State private var showComingSoon = false
 
     var body: some View {
         NavigationStack {
@@ -51,12 +50,15 @@ struct HomeView: View {
 
                     // Buttons stack
                     VStack(spacing: 14) {
-                        Button {
-                            showComingSoon = true
+                        // ✅ SINGLE PLAYER → SoloGameView
+                        NavigationLink {
+                            SoloGameView()
+                                .navigationBarBackButtonHidden(true)
                         } label: {
                             MenuButtonLabel(title: "SINGLE PLAYER")
                         }
 
+                        // TWO PLAYER (unchanged)
                         NavigationLink {
                             ContentView()
                                 .navigationBarBackButtonHidden(true)
@@ -88,33 +90,28 @@ struct HomeView: View {
                         MenuButtonLabel(title: "HIGH SCORES")
                     }
                     .padding(.horizontal, 28)
-
-                    // ✅ EVENT button removed
-                    // (Nothing else needed here – layout still looks clean.)
                 }
             }
             .navigationBarHidden(true)
         }
         .onAppear {
             // Let ContentView clear any navigation flags when we’re safely back home
-            NotificationCenter.default.post(name: Notification.Name("CoopRacer.ResetNavFlag"), object: nil)
+            NotificationCenter.default.post(
+                name: Notification.Name("CoopRacer.ResetNavFlag"),
+                object: nil
+            )
 
-            // Start/continue background track for menu, but only if enabled
-                if settings.musicEnabled {
-                    BGM.shared.play(volume: 0.24)
-                } else {
-                    BGM.shared.play(volume: 0.0)    // keep it running but silent
-                }
+            // Start/continue background track for menu
+            if settings.musicEnabled {
+                BGM.shared.play(volume: 0.24)
+            } else {
+                BGM.shared.play(volume: 0.0)    // keep it running but silent
+            }
 
             // Gentle header car wiggle
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 animateCars = true
             }
-        }
-        .alert("Coming soon", isPresented: $showComingSoon) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("This mode isn’t available yet. Try Two Player!")
         }
     }
 }

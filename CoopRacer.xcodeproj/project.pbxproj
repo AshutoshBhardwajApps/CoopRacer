@@ -37,17 +37,29 @@
 		E1A5E7EB2E791FBD007C7E37 /* Exceptions for "CoopRacer" folder in "CoopRacer" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				" SoloHighScoresStore.swift ",
 				Info.plist,
 			);
 			target = E1CB6F612E7518BD00B9186C /* CoopRacer */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		E1F3884D2ED27A8000ECFA57 /* Exceptions for "CoopRacer" folder in "Compile Sources" phase from "CoopRacer" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = E1CB6F5E2E7518BD00B9186C /* Sources */;
+			membershipExceptions = (
+				" SoloHighScoresStore.swift ",
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E1CB6F642E7518BD00B9186C /* CoopRacer */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				E1A5E7EB2E791FBD007C7E37 /* Exceptions for "CoopRacer" folder in "CoopRacer" target */,
+				E1F3884D2ED27A8000ECFA57 /* Exceptions for "CoopRacer" folder in "Compile Sources" phase from "CoopRacer" target */,
 			);
 			path = CoopRacer;
 			sourceTree = "<group>";

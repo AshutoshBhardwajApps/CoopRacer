@@ -8,6 +8,7 @@ struct CoopRacerApp: App {
     @StateObject private var settings        = SettingsStore.shared
     @StateObject private var purchaseManager = PurchaseManager.shared
     @StateObject private var scores          = HighScoresStore.shared
+    @StateObject private var soloScores = SoloHighScoresStore.shared
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +17,7 @@ struct CoopRacerApp: App {
                 .environmentObject(settings)
                 .environmentObject(purchaseManager)
                 .environmentObject(scores)
+                .environmentObject(soloScores)
                 .task {
                     // ✅ Make sure IAP state is correct on launch
                     await purchaseManager.loadProducts()

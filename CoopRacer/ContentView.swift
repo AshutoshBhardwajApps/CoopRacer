@@ -1,7 +1,7 @@
 import SwiftUI
 import SpriteKit
 
-// MARK: - ContentView
+// MARK: - ContentView (Two-Player Mode)
 
 struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
@@ -45,14 +45,12 @@ struct ContentView: View {
             pauseAll()
             BGM.shared.setVolume(0.0, fadeDuration: 0.15)   // hard mute
         }
-
         .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
             if !coordinator.showResults && !showPause {
                 resumeAll()
             }
             BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // restore
 
-            // Only preload next ad if ads are enabled
             if !adsDisabled {
                 AdManager.shared.preload()
             }
@@ -67,6 +65,7 @@ struct ContentView: View {
     }
 
     // MARK: - Split body (keeps the compiler happy)
+
     @ViewBuilder
     private func content(geo: GeometryProxy) -> some View {
         ZStack {
@@ -99,42 +98,37 @@ struct ContentView: View {
         }
         // Results sheet
         .sheet(isPresented: $coordinator.showResults, onDismiss: {
-            // Present the ad after the sheet has fully gone (if ads enabled)
             if !adsDisabled && !didTryAdAfterResults {
                 didTryAdAfterResults = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     AdManager.shared.presentIfAllowed()
                 }
             }
-            // If user chose "Go Home", navigate home shortly after triggering the ad
+
             if goHomeAfterResults {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
                     goHomeAfterResults = false
-                    dismiss() // pop back to HomeView
+                    dismiss()
                 }
             }
         }) {
             ResultsSheet(coordinator: coordinator) {
-                // --- PLAY AGAIN ---
+                // PLAY AGAIN
                 pulse = false
                 winnerPulse = false
-
-                // Dismiss the sheet first
                 coordinator.showResults = false
 
-                // Let onDismiss trigger the ad, then reset the round
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                     resetRound(playTick3: true, recreateScenes: false)
                 }
 
             } goHome: {
-                // --- GO HOME ---
+                // GO HOME
                 goHomeAfterResults = true
-                coordinator.showResults = false   // close sheet; onDismiss will handle ad and navigation
+                coordinator.showResults = false
             }
-            .environmentObject(settings) // <- make sure names are available
+            .environmentObject(settings)
             .onAppear {
-                // Only track ads if enabled
                 if !adsDisabled {
                     AdManager.shared.noteRoundCompleted()
                     AdManager.shared.preload()
@@ -155,7 +149,6 @@ struct ContentView: View {
                 resume: { showPause = false },
                 restart: {
                     showPause = false
-                    // 🔁 Restart should be a *fresh* round
                     resetRound(playTick3: true, recreateScenes: false)
                 },
                 goHome: { confirmHome = true }
@@ -175,7 +168,6 @@ struct ContentView: View {
         }
         // Countdown sounds
         .onChange(of: coordinator.startTick) { tick in
-            // Any time a new countdown starts (tick hits 3), hard-mute BGM
             if tick == 3 {
                 BGM.shared.setVolume(0.0, fadeDuration: 0.10)
             }
@@ -188,17 +180,13 @@ struct ContentView: View {
         }
         .onChange(of: coordinator.raceStarted) { started in
             if started {
-                // GO tail (only if effects are enabled)
                 if settings.effectsEnabled {
                     sounder.playGoTail(tail: 0.5)
                 }
 
-                // Bring in BGM only if music is enabled
                 if settings.musicEnabled {
-                    // Ensure player exists and starts at zero
                     BGM.shared.play(volume: 0.0)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                        // Gentle fade into gameplay volume
                         BGM.shared.setVolume(0.20, fadeDuration: 0.8)
                     }
                 } else {
@@ -244,7 +232,6 @@ struct ContentView: View {
                 }
                 resetRound(playTick3: true, recreateScenes: false)
 
-                // Start / stop BGM based on toggle, but at zero volume (countdown owns soundstage)
                 if settings.musicEnabled {
                     BGM.shared.play(volume: 0.0)
                 } else {
@@ -252,7 +239,6 @@ struct ContentView: View {
                 }
             }
             .onChange(of: geo.size) { newSize in
-                // Rebuild scenes only on meaningful size changes
                 let dx = abs(newSize.width - lastGeoSize.width)
                 let dy = abs(newSize.height - lastGeoSize.height)
                 guard dx > 20 || dy > 20 else { return }
@@ -277,32 +263,23 @@ struct ContentView: View {
     // MARK: - Reset & Scenes
 
     private func resetRound(playTick3: Bool, recreateScenes: Bool) {
-        // Make sure any old countdown tail stops
         sounder.stop()
-
-        // Fresh state in coordinator
         coordinator.startRound()
 
-        // Scenes
         if recreateScenes {
             let size = (lastGeoSize == .zero) ? UIScreen.main.bounds.size : lastGeoSize
             createScenes(for: size)
         }
 
-        // Resume scene updates so countdown can run
         resumeAll()
 
-        // Defer one tick so SpriteView attaches and didMove(to:) runs
         DispatchQueue.main.async {
             self.leftScene?.prepareForNewRound()
             self.rightScene?.prepareForNewRound()
         }
 
-        // Ensure BGM is muted during countdown for *every* reset
         BGM.shared.setVolume(0.0, fadeDuration: 0.0)
-
-        // We no longer manually play a "3" tick here;
-        // countdown SFX are driven entirely by startTick changes.
+        // SFX for 3-2-1 now handled by startTick changes
     }
 
     private func createScenes(for size: CGSize) {
@@ -322,48 +299,16 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Small reusable views
+// MARK: - Small reusable views that are *only* for 2-player layout
 
 private struct GameBoard: View {
     let leftScene: SKScene?
     let rightScene: SKScene?
+
     var body: some View {
         HStack(spacing: 0) {
             SpriteView(scene: leftScene ?? SKScene())
             SpriteView(scene: rightScene ?? SKScene())
-        }
-    }
-}
-
-private struct CountdownOverlay: View {
-    let startTick: Int
-    let raceStarted: Bool
-    @Binding var pulse: Bool
-
-    var body: some View {
-        Group {
-            if !raceStarted {
-                Group {
-                    if startTick >= 1 {
-                        Text("\(startTick)")
-                            .font(.system(size: 120, weight: .black, design: .rounded))
-                    } else {
-                        Text("START")
-                            .font(.system(size: 96, weight: .black, design: .rounded))
-                    }
-                }
-                .foregroundStyle(.white.opacity(0.95))
-                .padding(40)
-                .background(.black.opacity(0.25))
-                .clipShape(RoundedRectangle(cornerRadius: 24))
-                .opacity(pulse ? 0.5 : 1.0)
-                .scaleEffect(pulse ? 1.08 : 0.96)
-                .onAppear {
-                    withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
-                        pulse = true
-                    }
-                }
-            }
         }
     }
 }
@@ -403,79 +348,7 @@ private struct WinnerLayer: View {
     }
 }
 
-private struct PauseButtons: View {
-    let tap: () -> Void
-    var body: some View {
-        VStack {
-            Button(action: tap) { PauseChip(label: "Pause").rotationEffect(.degrees(180)) }
-                .padding(.top, 6)
-            Spacer()
-            Button(action: tap) { PauseChip(label: "Pause") }
-                .padding(.bottom, 6)
-        }
-    }
-}
-
-private struct PauseChip: View {
-    var label: String
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "pause.fill").font(.subheadline.bold())
-            Text(label).font(.subheadline.bold())
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 32)
-        .background(.ultraThinMaterial)
-        .foregroundStyle(.white)
-        .clipShape(Capsule(style: .continuous))
-        .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.25), lineWidth: 1))
-        .shadow(color: .black.opacity(0.4), radius: 4, y: 2)
-        .contentShape(Rectangle())
-    }
-}
-
-private struct PlayerControls: View {
-    var title: String
-    var color: Color
-    @Binding var left: Bool
-    @Binding var right: Bool
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(title).font(.caption).bold().foregroundColor(color)
-            HStack(spacing: 12) {
-                HoldPad(isPressed: $left,  title: "Left")
-                HoldPad(isPressed: $right, title: "Right")
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 6)
-        .background(Color.black)
-    }
-}
-
-private struct PlayerControlsMirrored: View {
-    var title: String
-    var color: Color
-    @Binding var left: Bool
-    @Binding var right: Bool
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(title).font(.caption).bold().foregroundColor(color).rotationEffect(.degrees(180))
-            HStack(spacing: 12) {
-                HoldPad(isPressed: $right, title: "Right", flipText: true)
-                HoldPad(isPressed: $left,  title: "Left",  flipText: true)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 6)
-        .background(Color.black)
-    }
-}
-
-// MARK: - Sheets (bundled so you won’t get “not in scope”)
-
+// Still private – only used by 2-player mode
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
     @EnvironmentObject var settings: SettingsStore
@@ -515,26 +388,6 @@ private struct ResultsSheet: View {
             .padding(.top, 12)
         }
         .padding(24)
-        .presentationDetents([.medium])
-    }
-}
-
-private struct PauseSheet: View {
-    var resume: () -> Void
-    var restart: () -> Void
-    var goHome: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button("Resume", action: resume)
-                    Button("Restart Round", action: restart)
-                    Button("Leave and go to Home", role: .destructive, action: goHome)
-                }
-            }
-            .navigationTitle("Paused")
-        }
         .presentationDetents([.medium])
     }
 }
