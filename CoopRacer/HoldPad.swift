@@ -4,23 +4,33 @@ import SwiftUI
 struct HoldPad: View {
     @Binding var isPressed: Bool
     var title: String
-    var flipText: Bool = false  // rotate just the label for the top player
+    var flipText: Bool = false
 
     var body: some View {
         ZStack {
+            // GUARANTEED VISIBLE BACKGROUND
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
-                .background(RoundedRectangle(cornerRadius: 14).fill(.primary.opacity(0.05)))
+                .fill(Color(white: 0.15))                   // dark grey, NOT black
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(isPressed ? 1.0 : 0.4), lineWidth: 2)
+                )
+
             Text(title)
                 .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)                    // ALWAYS visible
                 .rotationEffect(.degrees(flipText ? 180 : 0))
         }
+        .frame(height: 56)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in if !isPressed { isPressed = true } }
-                .onEnded { _ in isPressed = false }
+                .onChanged { _ in
+                    if !isPressed { isPressed = true }
+                }
+                .onEnded { _ in
+                    isPressed = false
+                }
         )
-        .frame(height: 56)
     }
 }
