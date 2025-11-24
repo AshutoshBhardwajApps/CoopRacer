@@ -37,7 +37,6 @@ struct ContentView: View {
         GeometryReader { geo in
             content(geo: geo)
         }
-        .background(AdPresenter()) // invisible presenter VC for interstitials
         .navigationBarBackButtonHidden(true)
 
         // Keep BGM + game state in sync with interstitials
@@ -62,6 +61,22 @@ struct ContentView: View {
             confirmHome = false
             didTryAdAfterResults = false
         }
+        // 👇 ADD THIS BLOCK HERE
+            .onDisappear {
+                // Full cleanup to prevent ghost SpriteViews
+                leftScene?.removeAllChildren()
+                rightScene?.removeAllChildren()
+
+                leftScene?.isPaused = true
+                rightScene?.isPaused = true
+
+                leftScene = nil
+                rightScene = nil
+
+                coordinator.isPaused = true
+                coordinator.roundActive = false
+                coordinator.raceStarted = false
+            }
     }
 
     // MARK: - Split body (keeps the compiler happy)

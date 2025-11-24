@@ -13,8 +13,9 @@ struct SoloGameView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var settings: SettingsStore
 
+    // SOLO coordinator
     @StateObject private var input       = PlayerInput()
-    @StateObject private var coordinator = GameCoordinator()
+    @StateObject private var coordinator = GameCoordinator(mode: .solo)
 
     private let sounder = CountdownSounder()
 
@@ -44,36 +45,35 @@ struct SoloGameView: View {
 
         // 🔊 Keep solo mode in sync with interstitial ads
         .onReceive(NotificationCenter.default.publisher(for: .adWillPresent)) { _ in
-            // Pause gameplay + hard mute BGM
             pauseAll()
             BGM.shared.setVolume(0.0, fadeDuration: 0.15)
         }
         .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
-            // Resume only if we’re not in a sheet
-            if !coordinator.showResults && !showPause {
+            // Only resume if SoloGameView is still active and no sheets are up
+            if scene != nil && !coordinator.showResults && !showPause {
                 resumeAll()
             }
 
-            // Restore or keep music off based on toggle
             if settings.musicEnabled {
                 BGM.shared.setVolume(0.20, fadeDuration: 0.20)
             } else {
                 BGM.shared.stop()
             }
 
-            // Preload next interstitial if ads are still enabled
             if !adsDisabled {
                 AdManager.shared.preload()
             }
         }
 
-        // Optional: clear flags when returning Home (same pattern as ContentView)
+        // Clear flags when returning Home
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("CoopRacer.ResetNavFlag"))) { _ in
             showPause = false
             confirmHome = false
             didTryAdAfterResults = false
             goHomeAfterResults = false
         }
+
+        // ⚠️ No heavy cleanup in onDisappear — avoids killing scene when ads/sheets appear
     }
 
     // MARK: - Split body
@@ -96,20 +96,36 @@ struct SoloGameView: View {
                 pulse: $pulse
             )
             .allowsHitTesting(false)
-
-            PauseButtons { showPause = true }
-                .padding(.horizontal, 20)
         }
         // Bottom controls – single player only
         .safeAreaInset(edge: .bottom) {
-            PlayerControls(title: settings.player1Name.uppercased(),
-                           color: Theme.p1,
-                           left: $input.p1Left,
-                           right: $input.p1Right)
+            VStack(spacing: 6) {
+                // Single pause button for Player 1 (bottom area)
+                HStack {
+                    Spacer()
+                    Button {
+                        showPause = true
+                    } label: {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundStyle(Theme.p1)
+                            .shadow(radius: 4)
+                    }
+                    .padding(.trailing, 24)
+                }
+
+                // Player 1 controls
+                PlayerControls(
+                    title: settings.player1Name.uppercased(),
+                    color: Theme.p1,
+                    left: $input.p1Left,
+                    right: $input.p1Right
+                )
+            }
         }
         // Results sheet
         .sheet(isPresented: $coordinator.showResults, onDismiss: {
-            // ✅ After the sheet closes, *then* try to show an interstitial
+            // After the sheet closes, try to show an interstitial
             if !adsDisabled && !didTryAdAfterResults {
                 didTryAdAfterResults = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
@@ -142,14 +158,14 @@ struct SoloGameView: View {
                 }
             )
             .onAppear {
-                // ✅ Save SOLO high score
+                // Save SOLO high score
                 SoloHighScoresStore.shared.add(
                     playerName: settings.player1Name,
                     score: coordinator.p1Score,
                     speedLevel: settings.selectedSpeedLevel
                 )
 
-                // ✅ Track & preload ads for this completed run (if ads enabled)
+                // Track & preload ads for this completed run (if ads enabled)
                 if !adsDisabled {
                     AdManager.shared.noteRoundCompleted()
                     AdManager.shared.preload()
@@ -186,7 +202,6 @@ struct SoloGameView: View {
                 BGM.shared.setVolume(0.0, fadeDuration: 0.10)
             }
             if tick == 3 || tick == 2 || tick == 1 {
-                // always play ticks in solo mode
                 sounder.playTick(blipLength: 0.18)
             }
         }
@@ -203,10 +218,12 @@ struct SoloGameView: View {
                 sounder.stop()
             }
         }
-        // When P1 finishes, auto-finish P2 so coordinator closes the round
+        // 🔐 SOLO SAFETY: if P1 is marked finished, force-end the round
+        // This guarantees showResults + ads even if solo-mode completion
+        // logic misfires for any reason.
         .onChange(of: coordinator.p1Finished) { finished in
-            if finished && !coordinator.p2Finished {
-                coordinator.markFinished(player: 2)
+            if finished && !coordinator.showResults {
+                coordinator.endRound()
             }
         }
         // Pause/resume on sheet
@@ -276,7 +293,7 @@ struct SoloGameView: View {
             input: input,
             coordinator: coordinator,
             carPNG: settings.player1Car,
-            mode: .solo                // <- important: SOLO mode
+            mode: .solo                // visual/behavioural solo mode
         )
     }
 }

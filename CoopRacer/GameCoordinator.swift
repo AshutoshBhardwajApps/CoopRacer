@@ -3,6 +3,19 @@ import Combine
 
 final class GameCoordinator: ObservableObject {
 
+    // MARK: - Mode
+
+    enum Mode {
+        case solo
+        case versus
+    }
+
+    let mode: Mode
+
+    init(mode: Mode = .versus) {
+        self.mode = mode
+    }
+
     // MARK: - Published Round State
     @Published var isPaused: Bool = false
     @Published var raceStarted: Bool = false
@@ -87,12 +100,27 @@ final class GameCoordinator: ObservableObject {
 
     // MARK: - Player Finishes Track
     func markFinished(player: Int) {
-        if player == 1 {
+        switch mode {
+        case .solo:
+            // Only P1 exists in solo mode; as soon as P1 finishes, we treat round as done.
+            guard player == 1 else { return }
+
             if !p1Finished { p1Finished = true }
-            if firstFinisher == nil { firstFinisher = 1 }
-        } else {
-            if !p2Finished { p2Finished = true }
-            if firstFinisher == nil { firstFinisher = 2 }
+            // Pretend P2 is also "done" so completion logic can stay simple
+            p2Finished = true
+
+            if firstFinisher == nil {
+                firstFinisher = 1
+            }
+
+        case .versus:
+            if player == 1 {
+                if !p1Finished { p1Finished = true }
+                if firstFinisher == nil { firstFinisher = 1 }
+            } else {
+                if !p2Finished { p2Finished = true }
+                if firstFinisher == nil { firstFinisher = 2 }
+            }
         }
 
         tryCompleteRound()
@@ -101,7 +129,15 @@ final class GameCoordinator: ObservableObject {
 
     // MARK: - Completion Check
     private func tryCompleteRound() {
-        guard p1Finished && p2Finished else { return }
+        switch mode {
+        case .solo:
+            // In solo mode we only care that P1 is done
+            guard p1Finished else { return }
+
+        case .versus:
+            // In versus mode we wait for BOTH players to finish
+            guard p1Finished && p2Finished else { return }
+        }
 
         // Round ends
         roundActive = false
@@ -111,7 +147,9 @@ final class GameCoordinator: ObservableObject {
         if let first = firstFinisher {
             winner = first
         } else {
-            winner = 0   // simultaneous or fallback
+            // Solo: fallback winner is P1
+            // Versus: fallback is tie
+            winner = (mode == .solo) ? 1 : 0
         }
 
         // Progress unlocks
@@ -135,14 +173,21 @@ final class GameCoordinator: ObservableObject {
         roundActive = false
         raceStarted = false
 
-        // Winner still respects "first to finish"
+        // Winner still respects "first to finish" if any
         if let first = firstFinisher {
             winner = first
         } else {
-            // fallback: use score if someone forced end
-            if p1Score > p2Score { winner = 1 }
-            else if p2Score > p1Score { winner = 2 }
-            else { winner = 0 }
+            switch mode {
+            case .solo:
+                // In solo, P1 is the only logical winner
+                winner = 1
+
+            case .versus:
+                // fallback: use score if someone forced end
+                if p1Score > p2Score { winner = 1 }
+                else if p2Score > p1Score { winner = 2 }
+                else { winner = 0 }
+            }
         }
 
         SettingsStore.shared.registerRoundResult(winner: winner)

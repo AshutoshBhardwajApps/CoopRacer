@@ -116,10 +116,8 @@ final class AdManager: NSObject, ObservableObject {
 
         // 3) Presenter available
         guard let rootVC = Self.presenterVC() else {
-            print("[AdManager] Presenter not ready, retry")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.presentIfAllowed(completion: completion)
-            }
+            print("[AdManager] Presenter not ready — skipping safely.")
+            completion?(false)
             return
         }
         guard rootVC.presentedViewController == nil else {

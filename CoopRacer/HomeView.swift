@@ -53,6 +53,7 @@ struct HomeView: View {
                         // ✅ SINGLE PLAYER → SoloGameView
                         NavigationLink {
                             SoloGameView()
+                                .id(UUID())                    // <— force a fresh instance each time
                                 .navigationBarBackButtonHidden(true)
                         } label: {
                             MenuButtonLabel(title: "SINGLE PLAYER")
