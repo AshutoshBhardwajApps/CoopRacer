@@ -13,7 +13,13 @@ final class AdManager: NSObject, ObservableObject {
 
     // ✅ Production interstitial unit ID (CoopRacer)
     // Old test ID was: "ca-app-pub-3940256099942544/4411468910"
-    private let interstitialID = "ca-app-pub-2320635595451132/37805247221"
+#if DEBUG
+/// Google test interstitial ad unit (safe for testing)
+private let interstitialID = "ca-app-pub-3940256099942544/4411468910"
+#else
+/// Your real CoopRacer production interstitial unit
+private let interstitialID = "ca-app-pub-2320635595451132/37805247221"
+#endif
 
     // Gates
     private let minGapSeconds: TimeInterval = 0
