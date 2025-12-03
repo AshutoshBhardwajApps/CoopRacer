@@ -17,9 +17,8 @@ struct CoopRacerApp: App {
                 .environmentObject(purchaseManager)
                 .environmentObject(scores)
                 .task {
-                    // ✅ Make sure IAP state is correct on launch
                     await purchaseManager.loadProducts()
-                    await purchaseManager.restorePurchases()
+                    await purchaseManager.restorePurchases(userInitiated: false)
                 }
         }
     }

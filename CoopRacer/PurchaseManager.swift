@@ -2,8 +2,6 @@
 //  PurchaseManager.swift
 //  CoopRacer
 //
-//  Created by Ashutosh Bhardwaj on 2025-11-19.
-//
 
 import Foundation
 import StoreKit
@@ -12,14 +10,14 @@ import StoreKit
 final class PurchaseManager: ObservableObject {
     static let shared = PurchaseManager()
 
-    /// Must match the non-consumable product ID you create in App Store Connect
-    private let removeAdsProductID = "coopracer.removeads"
+    // Use the same ID as SettingsStore
+    private let removeAdsProductID = SettingsStore.removeAdsProductID
 
-    @Published var removeAdsProduct: Product?
-    @Published var isLoading: Bool = false
+    @Published private(set) var removeAdsProduct: Product?
+    @Published private(set) var isLoading: Bool = false
     @Published var errorMessage: String?
 
-    /// Mirrors SettingsStore so UI & ad logic stay in sync
+    // Mirrors SettingsStore so UI & ad logic stay in sync
     @Published var hasRemovedAds: Bool {
         didSet {
             SettingsStore.shared.hasRemovedAds = hasRemovedAds
@@ -32,8 +30,8 @@ final class PurchaseManager: ObservableObject {
 
     // MARK: - Product loading
 
+    /// Loads the Remove Ads product once per launch.
     func loadProducts() async {
-        // Only load once per launch unless you want to refresh
         guard removeAdsProduct == nil else { return }
 
         isLoading = true
@@ -42,18 +40,21 @@ final class PurchaseManager: ObservableObject {
         do {
             let products = try await Product.products(for: [removeAdsProductID])
             removeAdsProduct = products.first
+            if removeAdsProduct == nil {
+                print("[PurchaseManager] Warning: no product returned for \(removeAdsProductID)")
+            }
         } catch {
-            print("IAP load error: \(error)")
-            errorMessage = "Unable to load purchase options. Please try again later."
+            // Log, but don't show an error on the Settings screen just for this.
+            print("[PurchaseManager] loadProducts error: \(error)")
         }
     }
 
     // MARK: - Purchase
 
     func buyRemoveAds() async {
+        // Clear any previous error only when the user actively taps "Remove Ads"
         errorMessage = nil
 
-        // Already unlocked
         if hasRemovedAds { return }
 
         // Ensure we have a product
@@ -62,12 +63,12 @@ final class PurchaseManager: ObservableObject {
                 let products = try await Product.products(for: [removeAdsProductID])
                 removeAdsProduct = products.first
             } catch {
-                print("IAP reload error: \(error)")
+                print("[PurchaseManager] reload products error: \(error)")
             }
         }
 
         guard let product = removeAdsProduct else {
-            errorMessage = "Purchase not available yet. Check your connection and try again."
+            errorMessage = "Purchase not available. Please try again later."
             return
         }
 
@@ -78,29 +79,35 @@ final class PurchaseManager: ObservableObject {
             let result = try await product.purchase()
 
             switch result {
-            case .success(let verificationResult):
-                try await handle(transactionVerification: verificationResult)
+            case .success(let verification):
+                try await handle(transactionVerification: verification)
 
             case .userCancelled:
-                // User backed out → no error shown
+                // User backed out → not a failure; don't show error text.
                 break
 
             case .pending:
+                // Ask-to-Buy etc.
                 errorMessage = "Purchase is pending approval."
 
             @unknown default:
-                break
+                errorMessage = "Purchase failed. Please try again."
             }
         } catch {
-            print("Purchase error: \(error)")
+            print("[PurchaseManager] purchase error: \(error)")
             errorMessage = "Purchase failed. Please try again."
         }
     }
 
     // MARK: - Restore
 
-    func restorePurchases() async {
-        errorMessage = nil
+    /// `userInitiated` is true only when the user taps the "Restore Purchases" button.
+    /// On app launch we call this with `false` so no red error text is shown.
+    func restorePurchases(userInitiated: Bool = false) async {
+        if userInitiated {
+            errorMessage = nil
+        }
+
         isLoading = true
         defer { isLoading = false }
 
@@ -109,18 +116,26 @@ final class PurchaseManager: ObservableObject {
         do {
             for await result in Transaction.currentEntitlements {
                 try await handle(transactionVerification: result)
+
                 if case .verified(let transaction) = result,
                    transaction.productID == removeAdsProductID {
                     restoredSomething = true
                 }
             }
 
-            if !restoredSomething && !hasRemovedAds {
-                errorMessage = "No purchases to restore."
+            if userInitiated {
+                if restoredSomething {
+                    errorMessage = "Purchases restored on this device."
+                } else if !hasRemovedAds {
+                    errorMessage = "No purchases to restore."
+                }
             }
+            // If not userInitiated, stay silent: no error label just from opening Settings.
         } catch {
-            print("Restore error: \(error)")
-            errorMessage = "Could not restore purchases."
+            print("[PurchaseManager] restore error: \(error)")
+            if userInitiated {
+                errorMessage = "Could not restore purchases. Please try again."
+            }
         }
     }
 
@@ -129,15 +144,12 @@ final class PurchaseManager: ObservableObject {
     private func handle(transactionVerification: VerificationResult<Transaction>) async throws {
         switch transactionVerification {
         case .unverified(_, let error):
-            // Can log this; we don't unlock on unverified
-            print("Unverified transaction: \(String(describing: error))")
+            print("[PurchaseManager] Unverified transaction: \(String(describing: error))")
 
         case .verified(let transaction):
-            // Only care about our remove-ads SKU
             if transaction.productID == removeAdsProductID {
                 hasRemovedAds = true
             }
-            // Always finish
             await transaction.finish()
         }
     }

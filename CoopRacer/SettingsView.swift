@@ -82,7 +82,7 @@ struct SettingsView: View {
 
                     Button("Restore Purchases") {
                         Task {
-                            await purchaseManager.restorePurchases()
+                            await purchaseManager.restorePurchases(userInitiated: true)
                         }
                     }
                     .disabled(purchaseManager.isLoading)
