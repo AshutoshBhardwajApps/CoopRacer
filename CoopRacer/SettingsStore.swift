@@ -30,6 +30,13 @@ final class SettingsStore: ObservableObject {
         "Ambulance", "truck"
     ]
 
+    // Wins required to unlock each car (0 = free from the start)
+    static let carUnlockThresholds: [String: Int] = [
+        "Car": 0, "Audi": 0, "Black_viper": 0,
+        "Police": 3, "Mini_truck": 8, "Mini_van": 15,
+        "taxi": 25, "Ambulance": 40, "truck": 60
+    ]
+
     static func displayName(for assetName: String) -> String {
         switch assetName {
         case "Car":          return "Car 1"
@@ -77,6 +84,13 @@ final class SettingsStore: ObservableObject {
     var highestWinRate: Double {
         guard totalRoundsPlayed > 0 else { return 0 }
         return Double(max(p1WinsTotal, p2WinsTotal)) / Double(totalRoundsPlayed)
+    }
+
+    var totalWins: Int { p1WinsTotal + p2WinsTotal }
+
+    func isCarUnlocked(_ car: String) -> Bool {
+        let threshold = SettingsStore.carUnlockThresholds[car] ?? 0
+        return totalWins >= threshold
     }
 
     // MARK: - Init
@@ -128,7 +142,10 @@ final class SettingsStore: ObservableObject {
         p2WinsTotal = 0
         speedLevelsUnlocked = false
         selectedSpeedLevel = .easy
+        player1Car = "Audi"
+        player2Car = "Car"
         saveProgress()
+        saveBasics()
     }
 
     func resetPurchasesDebug() {

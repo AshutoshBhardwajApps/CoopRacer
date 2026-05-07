@@ -3,7 +3,6 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject var settings: SettingsStore
     @State private var animateCars = false
-    @State private var showComingSoon = false
 
     var body: some View {
         NavigationStack {
@@ -51,8 +50,9 @@ struct HomeView: View {
 
                     // Buttons stack
                     VStack(spacing: 14) {
-                        Button {
-                            showComingSoon = true
+                        NavigationLink {
+                            ContentView(isSinglePlayer: true)
+                                .navigationBarBackButtonHidden(true)
                         } label: {
                             MenuButtonLabel(title: "SINGLE PLAYER")
                         }
@@ -110,11 +110,6 @@ struct HomeView: View {
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 animateCars = true
             }
-        }
-        .alert("Coming soon", isPresented: $showComingSoon) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("This mode isn’t available yet. Try Two Player!")
         }
     }
 }

@@ -3,6 +3,10 @@ import Combine
 
 final class GameCoordinator: ObservableObject {
 
+    // MARK: - Mode
+    /// Single-player mode: only P1 races; round ends when P1 reaches the finish line.
+    @Published var isSinglePlayer: Bool = false
+
     // MARK: - Published Round State
     @Published var isPaused: Bool = false
     @Published var raceStarted: Bool = false
@@ -101,14 +105,20 @@ final class GameCoordinator: ObservableObject {
 
     // MARK: - Completion Check
     private func tryCompleteRound() {
-        guard p1Finished && p2Finished else { return }
+        if isSinglePlayer {
+            guard p1Finished else { return }
+        } else {
+            guard p1Finished && p2Finished else { return }
+        }
 
         // Round ends
         roundActive = false
         raceStarted = false
 
         // Determine winner
-        if let first = firstFinisher {
+        if isSinglePlayer {
+            winner = 1   // solo: P1 always "wins" by completing the run
+        } else if let first = firstFinisher {
             winner = first
         } else {
             winner = 0   // simultaneous or fallback

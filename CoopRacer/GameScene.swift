@@ -19,6 +19,9 @@ final class GameScene: SKScene {
     private weak var input: PlayerInput?
     private weak var coordinator: GameCoordinator?
 
+    // Layout mode: when true the road fills more of the screen (used in single-player)
+    private let isFullWidth: Bool
+
     // Difficulty (pulled from SettingsStore at init time)
     private let difficulty: SpeedLevel
 
@@ -86,12 +89,14 @@ final class GameScene: SKScene {
          side: Side,
          input: PlayerInput,
          coordinator: GameCoordinator,
-         carPNG: String)
+         carPNG: String,
+         isFullWidth: Bool = false)
     {
         self.side = side
         self.input = input
         self.coordinator = coordinator
         self.chosenCarPNG = carPNG
+        self.isFullWidth = isFullWidth
         // Use current selected speed level for this scene
         self.difficulty = SettingsStore.shared.selectedSpeedLevel
 
@@ -113,10 +118,13 @@ final class GameScene: SKScene {
         // Keep road away from control bars (solid black bars live outside)
         let marginTowardBottom: CGFloat = (side == .left) ? 90 : 10
         let marginTowardTop: CGFloat    = (side == .right) ? 90 : 10
+        // Wider road in single-player so it fills the screen (no split companion lane)
+        let roadWidthFrac: CGFloat = isFullWidth ? 0.86 : 0.70
+        let roadInsetFrac: CGFloat = (1.0 - roadWidthFrac) / 2.0
         playableRect = CGRect(
-            x: size.width * 0.15,
+            x: size.width * roadInsetFrac,
             y: marginTowardBottom,
-            width: size.width * 0.70,
+            width: size.width * roadWidthFrac,
             height: size.height - marginTowardBottom - marginTowardTop
         )
 

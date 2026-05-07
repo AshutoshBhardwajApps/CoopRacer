@@ -4,6 +4,9 @@ import SpriteKit
 // MARK: - ContentView
 
 struct ContentView: View {
+    /// When true, only P1's lane is shown full-screen and the round ends when P1 finishes.
+    var isSinglePlayer: Bool = false
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var settings: SettingsStore
@@ -80,7 +83,7 @@ struct ContentView: View {
             WinnerLayer(coordinator: coordinator, winnerPulse: $winnerPulse)
                 .allowsHitTesting(false)
 
-            PauseButtons { showPause = true }
+            PauseButtons(showTopButton: !isSinglePlayer) { showPause = true }
                 .padding(.horizontal, 20)
         }
         // Player 1 controls (bottom)
@@ -90,12 +93,14 @@ struct ContentView: View {
                            left: $input.p1Left,
                            right: $input.p1Right)
         }
-        // Player 2 controls (top, mirrored)
+        // Player 2 controls (top, mirrored) — hidden in single-player
         .safeAreaInset(edge: .top) {
-            PlayerControlsMirrored(title: settings.player2Name.uppercased(),
-                                   color: Theme.p2,
-                                   left: $input.p2Left,
-                                   right: $input.p2Right)
+            if !isSinglePlayer {
+                PlayerControlsMirrored(title: settings.player2Name.uppercased(),
+                                       color: Theme.p2,
+                                       left: $input.p2Left,
+                                       right: $input.p2Right)
+            }
         }
         // Results sheet
         .sheet(isPresented: $coordinator.showResults, onDismiss: {
@@ -114,7 +119,7 @@ struct ContentView: View {
                 }
             }
         }) {
-            ResultsSheet(coordinator: coordinator) {
+            ResultsSheet(coordinator: coordinator, isSinglePlayer: isSinglePlayer) {
                 // --- PLAY AGAIN ---
                 pulse = false
                 winnerPulse = false
@@ -141,12 +146,15 @@ struct ContentView: View {
                     didTryAdAfterResults = false
                 }
 
-                HighScoresStore.shared.add(
-                    p1Name: SettingsStore.shared.player1Name,
-                    p2Name: SettingsStore.shared.player2Name,
-                    p1Score: coordinator.p1Score,
-                    p2Score: coordinator.p2Score
-                )
+                // Skip the 2-player leaderboard entry in solo mode
+                if !isSinglePlayer {
+                    HighScoresStore.shared.add(
+                        p1Name: SettingsStore.shared.player1Name,
+                        p2Name: SettingsStore.shared.player2Name,
+                        p1Score: coordinator.p1Score,
+                        p2Score: coordinator.p2Score
+                    )
+                }
             }
         }
         // Pause sheet
@@ -234,12 +242,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private func GameArea(geo: GeometryProxy) -> some View {
-        GameBoard(leftScene: leftScene, rightScene: rightScene)
+        GameBoard(leftScene: leftScene,
+                  rightScene: rightScene,
+                  isSinglePlayer: isSinglePlayer)
             .background(Color.black)
             .ignoresSafeArea()
             .onAppear {
+                // Tell the coordinator which mode we're in BEFORE the round starts
+                coordinator.isSinglePlayer = isSinglePlayer
+
                 lastGeoSize = geo.size
-                if leftScene == nil || rightScene == nil {
+                if leftScene == nil || (!isSinglePlayer && rightScene == nil) {
                     createScenes(for: geo.size)
                 }
                 resetRound(playTick3: true, recreateScenes: false)
@@ -307,18 +320,30 @@ struct ContentView: View {
 
     private func createScenes(for size: CGSize) {
         lastGeoSize = size
-        let half = CGSize(width: size.width / 2, height: size.height)
-        leftScene  = GameScene(size: half,
-                               side: .left,
-                               input: input,
-                               coordinator: coordinator,
-                               carPNG: settings.player1Car)
 
-        rightScene = GameScene(size: half,
-                               side: .right,
-                               input: input,
-                               coordinator: coordinator,
-                               carPNG: settings.player2Car)
+        if isSinglePlayer {
+            // Solo: one full-screen lane (P1 only) with a wider road
+            leftScene  = GameScene(size: size,
+                                   side: .left,
+                                   input: input,
+                                   coordinator: coordinator,
+                                   carPNG: settings.player1Car,
+                                   isFullWidth: true)
+            rightScene = nil
+        } else {
+            let half = CGSize(width: size.width / 2, height: size.height)
+            leftScene  = GameScene(size: half,
+                                   side: .left,
+                                   input: input,
+                                   coordinator: coordinator,
+                                   carPNG: settings.player1Car)
+
+            rightScene = GameScene(size: half,
+                                   side: .right,
+                                   input: input,
+                                   coordinator: coordinator,
+                                   carPNG: settings.player2Car)
+        }
     }
 }
 
@@ -327,10 +352,15 @@ struct ContentView: View {
 private struct GameBoard: View {
     let leftScene: SKScene?
     let rightScene: SKScene?
+    var isSinglePlayer: Bool = false
     var body: some View {
-        HStack(spacing: 0) {
+        if isSinglePlayer {
             SpriteView(scene: leftScene ?? SKScene())
-            SpriteView(scene: rightScene ?? SKScene())
+        } else {
+            HStack(spacing: 0) {
+                SpriteView(scene: leftScene ?? SKScene())
+                SpriteView(scene: rightScene ?? SKScene())
+            }
         }
     }
 }
@@ -404,11 +434,14 @@ private struct WinnerLayer: View {
 }
 
 private struct PauseButtons: View {
+    var showTopButton: Bool = true
     let tap: () -> Void
     var body: some View {
         VStack {
-            Button(action: tap) { PauseChip(label: "Pause").rotationEffect(.degrees(180)) }
-                .padding(.top, 6)
+            if showTopButton {
+                Button(action: tap) { PauseChip(label: "Pause").rotationEffect(.degrees(180)) }
+                    .padding(.top, 6)
+            }
             Spacer()
             Button(action: tap) { PauseChip(label: "Pause") }
                 .padding(.bottom, 6)
@@ -478,32 +511,48 @@ private struct PlayerControlsMirrored: View {
 
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
+    var isSinglePlayer: Bool = false
     @EnvironmentObject var settings: SettingsStore
     var playAgain: () -> Void
     var goHome: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
-            Text("Round Over").font(.largeTitle).bold()
+            Text(isSinglePlayer ? "Run Complete" : "Round Over")
+                .font(.largeTitle).bold()
 
-            HStack {
-                VStack {
+            if isSinglePlayer {
+                VStack(spacing: 6) {
                     Text(settings.player1Name)
                         .foregroundStyle(Theme.p1)
                         .font(.headline).bold()
                     Text("\(coordinator.p1Score)")
-                        .font(.title.monospacedDigit())
+                        .font(.system(size: 56, weight: .black, design: .rounded).monospacedDigit())
+                    Text("points")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Spacer()
-                VStack {
-                    Text(settings.player2Name)
-                        .foregroundStyle(Theme.p2)
-                        .font(.headline).bold()
-                    Text("\(coordinator.p2Score)")
-                        .font(.title.monospacedDigit())
+                .padding(.horizontal, 32)
+            } else {
+                HStack {
+                    VStack {
+                        Text(settings.player1Name)
+                            .foregroundStyle(Theme.p1)
+                            .font(.headline).bold()
+                        Text("\(coordinator.p1Score)")
+                            .font(.title.monospacedDigit())
+                    }
+                    Spacer()
+                    VStack {
+                        Text(settings.player2Name)
+                            .foregroundStyle(Theme.p2)
+                            .font(.headline).bold()
+                        Text("\(coordinator.p2Score)")
+                            .font(.title.monospacedDigit())
+                    }
                 }
+                .padding(.horizontal, 32)
             }
-            .padding(.horizontal, 32)
 
             HStack(spacing: 12) {
                 Button("Play Again", action: playAgain)

@@ -131,23 +131,37 @@ struct SettingsView: View {
 
 private struct CarGrid: View {
     @Binding var selection: String
+    @EnvironmentObject var settings: SettingsStore
     private let columns = [GridItem(.adaptive(minimum: 92), spacing: 12)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 12) {
             ForEach(SettingsStore.carOptions, id: \.self) { assetName in
                 let label = displayName(for: assetName)
+                let unlocked = settings.isCarUnlocked(assetName)
+                let threshold = SettingsStore.carUnlockThresholds[assetName] ?? 0
 
                 CarThumb(assetName: assetName,
                          label: label,
-                         selected: selection == assetName)
-                    .onTapGesture { selection = assetName }
+                         selected: selection == assetName,
+                         unlocked: unlocked,
+                         winsRequired: threshold)
+                    .onTapGesture {
+                        if unlocked { selection = assetName }
+                    }
             }
         }
         .padding(.vertical, 6)
+
+        if settings.totalWins > 0 {
+            Text("Total wins: \(settings.totalWins)")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 2)
+        }
     }
 
-    /// Maps asset names → clean labels
     private func displayName(for asset: String) -> String {
         switch asset {
         case "Car":
@@ -164,17 +178,19 @@ private struct CarGrid: View {
 }
 
 private struct CarThumb: View {
-    let assetName: String   // actual asset name used in UIImage / SKTexture
-    let label: String       // cleaned display label
+    let assetName: String
+    let label: String
     let selected: Bool
+    let unlocked: Bool
+    let winsRequired: Int
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(Color.white.opacity(unlocked ? 0.06 : 0.02))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(selected ? Color.blue : Color.white.opacity(0.15),
+                        .stroke(selected ? Color.blue : Color.white.opacity(unlocked ? 0.15 : 0.07),
                                 lineWidth: selected ? 2 : 1)
                 )
 
@@ -185,18 +201,30 @@ private struct CarThumb: View {
                     .interpolation(.high)
                     .scaledToFit()
                     .frame(height: 64)
+                    .opacity(unlocked ? 1.0 : 0.25)
 
                 Text(label)
                     .font(.caption)
-                    .foregroundColor(.white.opacity(0.85))
+                    .foregroundColor(.white.opacity(unlocked ? 0.85 : 0.35))
             }
             .padding(10)
 
-            if selected {
+            if selected && unlocked {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.blue)
                     .padding(8)
+            }
+
+            if !unlocked {
+                VStack(spacing: 3) {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                    Text("\(winsRequired)W")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                .foregroundColor(.yellow.opacity(0.85))
+                .padding(6)
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
