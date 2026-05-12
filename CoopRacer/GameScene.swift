@@ -97,6 +97,13 @@ final class GameScene: SKScene {
     private var isRecovering = false
     private var slowVignette: SKShapeNode?
 
+    // Nitro boost (solo-with-bots only)
+    private var boostCharge: CGFloat = 0
+    private let boostMax:          CGFloat = 100
+    private let boostDrainRate:    CGFloat = 35    // per second; full charge lasts ~2.85 s
+    private let boostFillPerDodge: CGFloat = 22    // charge per clean obstacle dodge
+    private let boostSpeedMult:    CGFloat = 1.22
+
     // MARK: - Bot opponents (solo race only)
     private let botCount: Int
     private let botDifficulty: BotDifficulty
@@ -110,6 +117,8 @@ final class GameScene: SKScene {
         var wobbleTimer: TimeInterval = 0
         var isFinished: Bool = false
         var node: SKSpriteNode
+        var crashPenaltyMult: CGFloat = 1.0
+        var penaltyRecoveryTimer: CGFloat = 0
     }
     private var botStates: [BotState] = []
     private var botsFinishedBeforePlayer: Int = 0
@@ -635,15 +644,12 @@ final class GameScene: SKScene {
 
     private func botParams(elapsed: TimeInterval) -> (speedMult: CGFloat, steeringRate: CGFloat) {
         switch botDifficulty {
-        case .easy:
-            return (0.82, 1.4)
-        case .medium:
-            return (1.00, 3.0)
-        case .hard:
-            return (1.14, 5.0)
+        case .easy:       return (1.0, 1.4)
+        case .medium:     return (1.0, 3.0)
+        case .hard:       return (1.0, 5.0)
         case .relentless:
             let t = CGFloat(min(1.0, elapsed / 30.0))
-            return (0.88 + 0.36 * t, 2.0 + 3.5 * t)
+            return (1.0, 2.0 + 3.5 * t)
         }
     }
 
@@ -656,17 +662,51 @@ final class GameScene: SKScene {
                 continue
             }
 
-            // Ramp params for relentless difficulty
-            let (speedMult, steeringRate) = botParams(elapsed: elapsedRaceTime)
-            bot.speedMult     = speedMult
-            bot.steeringRate  = steeringRate
+            // Ramp steeringRate (relentless gets sharper over time; speedMult is always 1.0)
+            let (_, steeringRate) = botParams(elapsed: elapsedRaceTime)
+            bot.steeringRate = steeringRate
 
-            // Advance bot distance
-            let botSpeed = baseSpeed * bot.speedMult * stageSpeedBoost
-            bot.distanceAdvanced += botSpeed * CGFloat(dt)
+            // Crash-penalty recovery (mirrors player applySmoothPenalty)
+            if bot.crashPenaltyMult < 0.999 {
+                bot.penaltyRecoveryTimer += CGFloat(dt)
+                let dur: CGFloat = 2.5
+                let t = min(1.0, bot.penaltyRecoveryTimer / dur)
+                bot.crashPenaltyMult = 0.40 + 0.60 * (1 - pow(1 - t, 2))
+            }
 
-            // Screen Y relative to player
+            // Check whether a nearby obstacle will cause a crash
+            let failChance: Double
+            switch botDifficulty {
+            case .easy:
+                failChance = 0.80
+            case .medium:
+                failChance = 0.50
+            case .hard:
+                failChance = 0.15
+            case .relentless:
+                failChance = max(0.08, 0.55 - 0.47 * min(1.0, elapsedRaceTime / 30.0))
+            }
+
+            // Bot screen Y relative to player
             let botScreenY = initialCarY + CGFloat(bot.distanceAdvanced - distanceAdvanced)
+
+            if bot.crashPenaltyMult >= 0.999 {
+                for obs in obstacles {
+                    let oy = obs.position.y
+                    let ahead = oy > botScreenY && oy < botScreenY + 75
+                    if ahead && abs(obs.position.x - bot.x) < 30 {
+                        if Double.random(in: 0...1) < failChance {
+                            bot.crashPenaltyMult = 0.40
+                            bot.penaltyRecoveryTimer = 0
+                        }
+                        break
+                    }
+                }
+            }
+
+            // Advance bot distance: base speed × crash penalty × stage boost
+            let botSpeed = baseSpeed * bot.crashPenaltyMult * stageSpeedBoost
+            bot.distanceAdvanced += botSpeed * CGFloat(dt)
 
             // Wobble refresh
             bot.wobbleTimer += dt
@@ -676,38 +716,38 @@ final class GameScene: SKScene {
             case .easy:       wobbleInterval = 0.9;  wobbleRange = 60
             case .medium:     wobbleInterval = 1.5;  wobbleRange = 30
             case .hard:       wobbleInterval = 2.2;  wobbleRange = 14
-            case .relentless: wobbleInterval = 1.8;  wobbleRange = max(8, 35 - 27 * CGFloat(min(1.0, elapsedRaceTime / 30.0)))
+            case .relentless:
+                wobbleInterval = 1.8
+                wobbleRange = max(8, 35 - 27 * CGFloat(min(1.0, elapsedRaceTime / 30.0)))
             }
             if bot.wobbleTimer >= wobbleInterval {
                 bot.wobbleTimer = 0
                 bot.wobbleTarget = CGFloat.random(in: -wobbleRange...wobbleRange)
             }
 
-            // Target X
+            // Target X = road centre + wobble
             let midX = roadBounds(at: botScreenY).map { ($0.left + $0.right) / 2 } ?? playableRect.midX
             var targetX = midX + bot.wobbleTarget
 
-            // Obstacle avoidance
+            // Obstacle avoidance steering (separate from crash roll above)
             let avoidProb: Double
             switch botDifficulty {
-            case .easy:       avoidProb = 0.0
-            case .medium:     avoidProb = 0.50
-            case .hard:       avoidProb = 0.85
-            case .relentless: avoidProb = min(0.90, 0.40 + 0.50 * min(1.0, elapsedRaceTime / 30.0))
+            case .easy:       avoidProb = 0.20
+            case .medium:     avoidProb = 0.55
+            case .hard:       avoidProb = 0.88
+            case .relentless: avoidProb = min(0.92, 0.45 + 0.47 * min(1.0, elapsedRaceTime / 30.0))
             }
-            if avoidProb > 0 {
-                for obs in obstacles {
-                    let oy = obs.position.y
-                    if oy > botScreenY && oy < botScreenY + 80 && Double.random(in: 0...1) < avoidProb {
-                        let dx = obs.position.x - bot.x
-                        if abs(dx) < 30 {
-                            targetX = bot.x + (dx < 0 ? 45 : -45)
-                        }
+            for obs in obstacles {
+                let oy = obs.position.y
+                if oy > botScreenY && oy < botScreenY + 80 && Double.random(in: 0...1) < avoidProb {
+                    let dx = obs.position.x - bot.x
+                    if abs(dx) < 30 {
+                        targetX = bot.x + (dx < 0 ? 45 : -45)
                     }
                 }
             }
 
-            // Steer
+            // Steer toward target
             let newX = bot.x + (targetX - bot.x) * bot.steeringRate * CGFloat(dt)
             if let bounds = roadBounds(at: botScreenY) {
                 bot.x = max(bounds.left + carEdgePad, min(bounds.right - carEdgePad, newX))
@@ -781,6 +821,7 @@ final class GameScene: SKScene {
         distanceAdvanced = 0
         hasSignalledFinish = false
         isRecovering = false
+        boostCharge = 0
 
         botsFinishedBeforePlayer = 0
         buildBots()
@@ -1263,7 +1304,17 @@ final class GameScene: SKScene {
         let combinedSpawnScale = stageSpawnScale * diffSpawnScale
 
         let worldDir: CGFloat = (side == .left) ? -1.0 : +1.0
-        let speed = baseSpeed * speedMultiplier * stageSpeedBoost * diffBoost
+
+        // Nitro boost (only in solo-with-bots mode)
+        let isBoosting = botCount > 0 && !isEndlessMode
+                      && (input?.p1Boost == true) && boostCharge > 0
+        if isBoosting {
+            boostCharge = max(0, boostCharge - boostDrainRate * CGFloat(dt))
+        }
+        coordinator?.boostCharge = boostCharge
+
+        let boostFactor: CGFloat = isBoosting ? boostSpeedMult : 1.0
+        let speed = baseSpeed * speedMultiplier * stageSpeedBoost * diffBoost * boostFactor
         let dy = worldDir * speed * CGFloat(dt)
 
         // Distance tracking
@@ -1375,6 +1426,10 @@ final class GameScene: SKScene {
                         coordinator?.addScore(player1: true, points: 1)
                         ob.userData?["scored"] = true
                         scored = true
+                        // Earn boost charge for each clean dodge
+                        if botCount > 0 && !isEndlessMode {
+                            boostCharge = min(boostMax, boostCharge + boostFillPerDodge)
+                        }
                     }
                 } else {
                     if ob.position.y >= (carNode.position.y + 12) {

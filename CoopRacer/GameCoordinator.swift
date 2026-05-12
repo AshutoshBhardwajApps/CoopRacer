@@ -36,6 +36,7 @@ final class GameCoordinator: ObservableObject {
     @Published var endlessDistance: Int = 0    // live meters, pushed from GameScene each frame
     @Published var endlessLives: Int = 3
     @Published var isNewPersonalBest: Bool = false
+    @Published var boostCharge: CGFloat = 0   // 0–100, pushed from GameScene each frame
 
     // MARK: - Solo Bot Race
     @Published var playerFinishPosition: Int = 1   // 1 = won, 2 = 2nd, etc.
@@ -70,6 +71,7 @@ final class GameCoordinator: ObservableObject {
         endlessDistance = 0
         endlessLives = 3
         isNewPersonalBest = false
+        boostCharge = 0
         playerFinishPosition = 1
 
         timer?.cancel()

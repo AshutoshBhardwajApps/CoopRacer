@@ -102,7 +102,10 @@ struct ContentView: View {
             PlayerControls(title: settings.player1Name.uppercased(),
                            color: Theme.p1,
                            left: $input.p1Left,
-                           right: $input.p1Right)
+                           right: $input.p1Right,
+                           boost: $input.p1Boost,
+                           showBoost: isSinglePlayer && !isEndlessMode && botCount > 0,
+                           boostCharge: coordinator.boostCharge)
         }
         // Player 2 controls (top, mirrored) — hidden in single-player
         .safeAreaInset(edge: .top) {
@@ -495,18 +498,78 @@ private struct PlayerControls: View {
     var color: Color
     @Binding var left: Bool
     @Binding var right: Bool
+    @Binding var boost: Bool
+    var showBoost: Bool = false
+    var boostCharge: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 6) {
             Text(title).font(.caption).bold().foregroundColor(color)
-            HStack(spacing: 12) {
-                HoldPad(isPressed: $left,  title: "Left")
-                HoldPad(isPressed: $right, title: "Right")
+            HStack(spacing: 10) {
+                HoldPad(isPressed: $left, title: "◀")
+                if showBoost {
+                    BoostPad(isPressed: $boost, charge: boostCharge)
+                        .frame(width: 68)
+                }
+                HoldPad(isPressed: $right, title: "▶")
             }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 6)
         .background(Color.black)
+    }
+}
+
+private struct BoostPad: View {
+    @Binding var isPressed: Bool
+    var charge: CGFloat   // 0–100
+
+    private var chargeColor: Color {
+        charge > 60 ? .yellow : charge > 20 ? .orange : Color(white: 0.45)
+    }
+    private var canBoost: Bool { charge > 0 }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            // Thin charge bar above button
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.10))
+                    Capsule()
+                        .fill(chargeColor)
+                        .frame(width: geo.size.width * min(1, charge / 100))
+                        .animation(.linear(duration: 0.1), value: charge)
+                }
+            }
+            .frame(height: 4)
+
+            // Button
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(chargeColor.opacity(isPressed && canBoost ? 0.9 : 0.35),
+                                  lineWidth: 1.5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(chargeColor.opacity(isPressed && canBoost ? 0.22 : 0.06))
+                    )
+                VStack(spacing: 1) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 18, weight: .black))
+                        .foregroundStyle(chargeColor)
+                    Text("BOOST")
+                        .font(.system(size: 8, weight: .black))
+                        .foregroundStyle(chargeColor.opacity(0.85))
+                        .tracking(1)
+                }
+            }
+            .frame(height: 50)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in if !isPressed && canBoost { isPressed = true } }
+                    .onEnded   { _ in isPressed = false }
+            )
+        }
     }
 }
 
