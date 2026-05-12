@@ -49,21 +49,28 @@ final class GameScene: SKScene {
     private var playableRect: CGRect = .zero
     private var laneWidth: CGFloat { playableRect.width * 0.40 }
 
-    // Full-width movement — bounds track the current live road half-width
     private var carEdgePad: CGFloat { 15 }
-    private var roadMinX: CGFloat { playableRect.midX - activeRoadHalfWidth + carEdgePad }
-    private var roadMaxX: CGFloat { playableRect.midX + activeRoadHalfWidth - carEdgePad }
+    private var roadMinX: CGFloat { playableRect.minX + carEdgePad }
+    private var roadMaxX: CGFloat { playableRect.maxX - carEdgePad }
 
-    // MARK: - Road width animation (narrow / wide sections like Road Fighter)
-    private var currentRoadHalfWidth: CGFloat = 0   // animates toward target
-    private var targetRoadHalfWidth:  CGFloat = 0   // set by the width-cycle logic
-    private let roadWidthChangeSpeed: CGFloat = 22  // pts/sec — smooth but visible
-    private var maxRoadHalfWidth:     CGFloat = 0   // stored at init from playableRect
-
-    /// Half-width used by rendering; falls back to full in two-player mode.
-    private var activeRoadHalfWidth: CGFloat {
-        isFullWidth ? currentRoadHalfWidth : playableRect.width / 2
+    // MARK: - Angular control-point road (Road Fighter style)
+    // Road is a list of (leftX, rightX, y) points sorted by ascending Y.
+    // Each frame they scroll down (for P1). Old points are removed at the bottom;
+    // new points are generated at the top using the angular segment generator.
+    private struct RoadPoint {
+        var leftX:  CGFloat
+        var rightX: CGFloat
+        var y:      CGFloat
     }
+    private var roadPoints: [RoadPoint] = []
+    private let pointSpacing: CGFloat = 130          // px between consecutive points
+
+    // Generator state
+    private var genLeft:          CGFloat = 0        // current left-edge X at generator head
+    private var genRight:         CGFloat = 0        // current right-edge X at generator head
+    private var genLeftDelta:     CGFloat = 0        // shift added to left edge per new point
+    private var genRightDelta:    CGFloat = 0        // shift added to right edge per new point
+    private var genSegsRemaining: Int     = 0        // points remaining on this behaviour
 
     // Remember original spawn Y so restarts go back to true start
     private var initialCarY: CGFloat = 0
@@ -95,15 +102,7 @@ final class GameScene: SKScene {
     private let scenerySpacing: CGFloat = 90
     private let sceneryCount:   Int     = 14   // per side; extra covers wrap gaps
 
-    // MARK: - Road curve (proper per-Y polygon bend, Road Fighter style)
-    // The road bottom stays centred (near the car = zero shift).
-    // The road top shifts left/right (far horizon = full shift).
-    // Every frame the road polygon, dashes, and obstacles are recomputed.
-    private var curvePhase:        Double  = 0     // sine input, advances over time
-    private var curveIntensity:    CGFloat = 0     // current sin value  (-1 … +1)
-    private var prevCurveIntensity: CGFloat = 0    // last frame's value (for delta)
-    private let curveCycleSpeed:   Double  = 0.28  // radians/s → ~22 s per full bend
-    private let maxRoadCurveShift: CGFloat = 78    // px shift at the very top of road
+    // (Road curve properties replaced by control-point system above)
 
     // Pause tracking (so we only fade once)
     private var wasPaused: Bool = false
@@ -162,10 +161,8 @@ final class GameScene: SKScene {
         // Configure baseSpeed according to difficulty (Easy/Medium/Hard/Insane)
         configureBaseSpeed()
 
-        // Road width — start at full; animated per-frame in update()
-        maxRoadHalfWidth     = playableRect.width / 2
-        currentRoadHalfWidth = maxRoadHalfWidth
-        targetRoadHalfWidth  = maxRoadHalfWidth
+        // Initialise angular road control points
+        if isFullWidth { initRoadPoints() }
 
         // Grass background + road shoulder lines (full-width modes only)
         if isFullWidth { buildBackground() }
@@ -261,10 +258,7 @@ final class GameScene: SKScene {
         spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
-        curvePhase         = 0
-        curveIntensity     = 0
-        prevCurveIntensity = 0
-        elapsedRaceTime    = 0
+        elapsedRaceTime = 0
         layoutDashes()
         wasPaused = false
     }
@@ -391,68 +385,138 @@ final class GameScene: SKScene {
         }
     }
 
-    // MARK: - Road curve helpers
+    // MARK: - Angular road — control-point helpers
 
-    /// X coordinate of the road centre at a given scene Y, accounting for the current curve.
-    /// Bottom of the road (near the car) has zero shift; top (far horizon) has full shift.
-    private func roadCenterX(at sceneY: CGFloat) -> CGFloat {
-        guard isFullWidth else { return playableRect.midX }
-        // t: 0 = bottom/near-car, 1 = top/horizon  (flipped for top player)
-        let raw: CGFloat = (side == .left)
-            ? (sceneY - playableRect.minY) / playableRect.height
-            : (playableRect.maxY - sceneY) / playableRect.height
-        let t = max(0, min(1, raw))
-        // Quadratic easing: shift accelerates into the distance
-        return playableRect.midX + curveIntensity * maxRoadCurveShift * t * t
+    /// Returns interpolated (leftX, rightX) for the road at a given screen Y.
+    /// Points must be sorted ascending-Y (bottom → top).
+    private func roadBounds(at y: CGFloat) -> (left: CGFloat, right: CGFloat)? {
+        guard roadPoints.count >= 2 else { return nil }
+        for i in 0..<(roadPoints.count - 1) {
+            let lo = roadPoints[i], hi = roadPoints[i + 1]
+            guard y >= lo.y && y <= hi.y else { continue }
+            let t  = (hi.y == lo.y) ? 0 : (y - lo.y) / (hi.y - lo.y)
+            return (lo.leftX  + (hi.leftX  - lo.leftX)  * t,
+                    lo.rightX + (hi.rightX - lo.rightX) * t)
+        }
+        // Outside the array range — clamp to nearest end
+        if y < roadPoints.first!.y { let p = roadPoints.first!; return (p.leftX, p.rightX) }
+        let p = roadPoints.last!; return (p.leftX, p.rightX)
     }
 
-    /// Rebuilds the road polygon so both edges bend with the current curve and width.
-    /// Called once per frame.
+    /// Rebuilds the road polygon from control points.
+    /// Falls back to a plain rect in two-player (non-fullWidth) mode.
     private func updateRoadPath() {
-        let segments = 28       // enough for a smooth bend
-        let halfW    = activeRoadHalfWidth
-        let segH     = playableRect.height / CGFloat(segments)
-
-        let path = CGMutablePath()
-        var leftPts:  [CGPoint] = []
-        var rightPts: [CGPoint] = []
-
-        for i in 0...segments {
-            let y  = playableRect.minY + CGFloat(i) * segH
-            let cx = roadCenterX(at: y)
-            leftPts.append(CGPoint(x: cx - halfW, y: y))
-            rightPts.append(CGPoint(x: cx + halfW, y: y))
+        guard isFullWidth, roadPoints.count >= 2 else {
+            roadNode.path = CGPath(roundedRect: playableRect, cornerWidth: 10,
+                                   cornerHeight: 10, transform: nil)
+            return
         }
-
-        // Walk left edge bottom → top, right edge top → bottom
-        path.move(to: leftPts[0])
-        for pt in leftPts.dropFirst() { path.addLine(to: pt) }
-        for pt in rightPts.reversed() { path.addLine(to: pt) }
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: roadPoints[0].leftX, y: roadPoints[0].y))
+        for pt in roadPoints.dropFirst() { path.addLine(to: CGPoint(x: pt.leftX,  y: pt.y)) }
+        for pt in roadPoints.reversed()  { path.addLine(to: CGPoint(x: pt.rightX, y: pt.y)) }
         path.closeSubpath()
-
         roadNode.path = path
     }
 
-    // Position dashes — each one independently follows roadCenterX at its Y.
+    /// Populates the control-point array from scratch (straight road, full width).
+    private func initRoadPoints() {
+        roadPoints.removeAll()
+        genLeft  = playableRect.minX
+        genRight = playableRect.maxX
+        genLeftDelta     = 0
+        genRightDelta    = 0
+        genSegsRemaining = 5   // 5 straight segments before first bend
+
+        // Seed enough points to fill screen + buffer above and below
+        let startY = playableRect.minY - pointSpacing * 2
+        let endY   = playableRect.maxY + pointSpacing * 3
+        var y = startY
+        while y <= endY {
+            roadPoints.append(RoadPoint(leftX: genLeft, rightX: genRight, y: y))
+            y += pointSpacing
+        }
+    }
+
+    /// Generates the next road control point at the top of the array,
+    /// choosing a new angular behaviour when the current run expires.
+    private func generateNextPoint() {
+        if genSegsRemaining <= 0 { chooseNextBehaviour() }
+        genSegsRemaining -= 1
+
+        let minLeft:  CGFloat = 12
+        let maxRight: CGFloat = size.width - 12
+        let minWidth: CGFloat = playableRect.width * 0.30   // road can't get this narrow
+
+        genLeft  += genLeftDelta
+        genRight += genRightDelta
+
+        // Bounce off screen/min-width walls and flip the delta
+        if genLeft < minLeft  { genLeft  = minLeft;              genLeftDelta  = abs(genLeftDelta) }
+        if genRight > maxRight { genRight = maxRight;            genRightDelta = -abs(genRightDelta) }
+        if genRight - genLeft < minWidth {
+            // Widen back out: push edges apart
+            let mid = (genLeft + genRight) / 2
+            genLeft  = mid - minWidth / 2; genLeftDelta  = -abs(genLeftDelta)
+            genRight = mid + minWidth / 2; genRightDelta =  abs(genRightDelta)
+        }
+
+        let topY = (roadPoints.last?.y ?? playableRect.maxY) + pointSpacing
+        roadPoints.append(RoadPoint(leftX: genLeft, rightX: genRight, y: topY))
+    }
+
+    /// Randomly picks the next angular road behaviour.
+    private func chooseNextBehaviour() {
+        // (leftDelta, rightDelta, minRun, maxRun)
+        // Positive delta = edge moves RIGHT; negative = moves LEFT.
+        typealias B = (CGFloat, CGFloat, Int, Int)
+        let pool: [B] = [
+            // Straight — weighted 3×
+            ( 0,    0,   4, 7),
+            ( 0,    0,   3, 6),
+            ( 0,    0,   3, 5),
+            // Symmetric bends (whole road shifts)
+            (-58,  -58,  2, 4),   // sharp left
+            ( 58,   58,  2, 4),   // sharp right
+            (-35,  -35,  2, 4),   // gentle left
+            ( 35,   35,  2, 4),   // gentle right
+            // Width changes
+            ( 40,  -40,  2, 3),   // squeeze narrow
+            (-32,   32,  2, 3),   // open wide
+            // Asymmetric — one edge straight, other tapers
+            ( 55,    0,  2, 4),   // left edge cuts in
+            (  0,  -55,  2, 4),   // right edge cuts in
+            (-55,    0,  2, 4),   // left edge expands
+            (  0,   55,  2, 4),   // right edge expands
+            // Diagonal — edges move opposite directions unequally
+            ( 50,  -15,  2, 3),   // aggressive left taper
+            (-15,  -50,  2, 3),   // aggressive right taper
+            ( 15,   50,  2, 3),   // aggressive right expand
+        ]
+        let b = pool.randomElement()!
+        genLeftDelta     = b.0
+        genRightDelta    = b.1
+        genSegsRemaining = Int.random(in: b.2...b.3)
+    }
+
+    /// Positions dashes — each dash independently queries road bounds at its Y.
     private func layoutDashes() {
         for (i, dash) in dashNodes.enumerated() {
             let base = CGFloat(i) * dashSpacing
-
             let p = CGMutablePath()
             if side == .left {
                 let yStart = playableRect.minY + base - dashPhase
-                let yEnd   = yStart + dashLen
-                let cx     = roadCenterX(at: yStart)
+                let cx     = roadBounds(at: yStart).map { ($0.left + $0.right) / 2 }
+                             ?? playableRect.midX
                 p.move(to: CGPoint(x: cx, y: yStart))
-                p.addLine(to: CGPoint(x: cx, y: yEnd))
+                p.addLine(to: CGPoint(x: cx, y: yStart + dashLen))
             } else {
                 let yStart = playableRect.maxY - base + dashPhase
-                let yEnd   = yStart - dashLen
-                let cx     = roadCenterX(at: yStart)
+                let cx     = roadBounds(at: yStart).map { ($0.left + $0.right) / 2 }
+                             ?? playableRect.midX
                 p.move(to: CGPoint(x: cx, y: yStart))
-                p.addLine(to: CGPoint(x: cx, y: yEnd))
+                p.addLine(to: CGPoint(x: cx, y: yStart - dashLen))
             }
-
             dash.path = p
         }
     }
@@ -567,12 +631,8 @@ final class GameScene: SKScene {
         // Dashes back to base placement
         layoutDashes()
 
-        // Reset curve + width state
-        curvePhase           = 0
-        curveIntensity       = 0
-        prevCurveIntensity   = 0
-        currentRoadHalfWidth = maxRoadHalfWidth
-        targetRoadHalfWidth  = maxRoadHalfWidth
+        // Reset road control points
+        if isFullWidth { initRoadPoints() }
         updateRoadPath()
 
         // Rebuild scenery so trees get fresh random positions each run
@@ -903,11 +963,13 @@ final class GameScene: SKScene {
             break
         }
 
-        // Spawn across the live road width, centred on the bent horizon
+        // Spawn within the actual road bounds at the horizon
         let spawnY: CGFloat = (side == .left) ? playableRect.maxY + 30 : playableRect.minY - 30
-        let spawnCX = isFullWidth ? roadCenterX(at: spawnY) : playableRect.midX
-        let halfW   = activeRoadHalfWidth - carEdgePad
-        let x       = CGFloat.random(in: (spawnCX - halfW) ... (spawnCX + halfW))
+        let spawnBounds = isFullWidth
+            ? roadBounds(at: spawnY) ?? (left: playableRect.minX, right: playableRect.maxX)
+            : (left: playableRect.minX, right: playableRect.maxX)
+        let x = CGFloat.random(in: (spawnBounds.left + carEdgePad)
+                                    ... (spawnBounds.right - carEdgePad))
         node.position = CGPoint(x: x, y: spawnY)
 
         addChild(node)
@@ -988,25 +1050,7 @@ final class GameScene: SKScene {
         // Track elapsed race time for stage difficulty
         elapsedRaceTime += dt
 
-        // Road width cycle (full-width modes only) — narrow/wide sections like Road Fighter
-        if isFullWidth {
-            // 55-second loop: 20s wide → 18s medium → 17s narrow → repeat
-            let cycle = elapsedRaceTime.truncatingRemainder(dividingBy: 55.0)
-            if cycle < 20 {
-                targetRoadHalfWidth = maxRoadHalfWidth                       // full width
-            } else if cycle < 38 {
-                targetRoadHalfWidth = maxRoadHalfWidth * 0.62                // medium (2 lanes feel)
-            } else {
-                targetRoadHalfWidth = maxRoadHalfWidth * 0.40                // narrow (1 lane feel)
-            }
-            // Ease current toward target
-            let widthDelta = CGFloat(dt) * roadWidthChangeSpeed
-            if currentRoadHalfWidth < targetRoadHalfWidth {
-                currentRoadHalfWidth = min(targetRoadHalfWidth, currentRoadHalfWidth + widthDelta)
-            } else {
-                currentRoadHalfWidth = max(targetRoadHalfWidth, currentRoadHalfWidth - widthDelta)
-            }
-        }
+        // Scroll road control points and regenerate at the horizon (full-width only)
 
         // Per-stage multipliers — endless mode climbs forever; fixed race uses 3 stages
         var stageSpeedBoost: CGFloat = 1.0
@@ -1088,27 +1132,22 @@ final class GameScene: SKScene {
         // Center dashed line via PHASE (never flickers)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
 
-        // Road curve — proper per-Y polygon bend (full-width modes only)
         if isFullWidth {
-            prevCurveIntensity = curveIntensity
-            curvePhase    += dt * curveCycleSpeed
-            curveIntensity = CGFloat(sin(curvePhase))   // -1 … +1
+            // Scroll all control points with the world
+            for i in 0..<roadPoints.count { roadPoints[i].y += dy }
 
-            // Bend the road polygon and dashes
-            updateRoadPath()
-            layoutDashes()
+            // Drop points that have scrolled past the bottom buffer zone
+            let cutoff = playableRect.minY - pointSpacing * 2
+            roadPoints.removeAll { $0.y < cutoff }
 
-            // Shift each obstacle by how much the road centre moved at its Y position
-            for ob in obstacles {
-                let raw: CGFloat = (side == .left)
-                    ? (ob.position.y - playableRect.minY) / playableRect.height
-                    : (playableRect.maxY - ob.position.y) / playableRect.height
-                let t = max(0, min(1, raw))
-                let prevShift = prevCurveIntensity * maxRoadCurveShift * t * t
-                let newShift  = curveIntensity     * maxRoadCurveShift * t * t
-                ob.position.x += newShift - prevShift
+            // Generate new points at the top until we have enough ahead
+            let horizon = playableRect.maxY + pointSpacing * 3
+            while roadPoints.last.map({ $0.y }) ?? 0 < horizon {
+                generateNextPoint()
             }
 
+            updateRoadPath()
+            layoutDashes()
             updateScenery(dy: dy)
         } else {
             layoutDashes()
@@ -1205,8 +1244,14 @@ final class GameScene: SKScene {
             if input?.p2Left  == true { moveX += vx }
             if input?.p2Right == true { moveX -= vx }
         }
-        // Clamp to the live (possibly narrowed) road bounds
-        carNode.position.x = max(roadMinX, min(roadMaxX, carNode.position.x + moveX * CGFloat(dt)))
+        // Clamp to road bounds at the car's current Y (follows angular road shape)
+        let newX = carNode.position.x + moveX * CGFloat(dt)
+        if isFullWidth, let bounds = roadBounds(at: carNode.position.y) {
+            carNode.position.x = max(bounds.left + carEdgePad,
+                                     min(bounds.right - carEdgePad, newX))
+        } else {
+            carNode.position.x = max(roadMinX, min(roadMaxX, newX))
+        }
     }
 
     // MARK: - Endless mode: brief crash flash (no speed change, just visual drama)
