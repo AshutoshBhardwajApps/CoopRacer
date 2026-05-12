@@ -69,8 +69,7 @@ struct HomeView: View {
                         }
 
                         NavigationLink {
-                            ContentView(isSinglePlayer: true)
-                                .navigationBarBackButtonHidden(true)
+                            RaceSetupView()
                         } label: {
                             MenuButtonLabel(title: "SOLO RACE")
                         }

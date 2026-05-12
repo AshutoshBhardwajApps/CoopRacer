@@ -1,6 +1,63 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Bot Race Difficulty
+
+enum BotDifficulty: String, CaseIterable, Identifiable, Comparable, Codable {
+    case easy       = "easy"
+    case medium     = "medium"
+    case hard       = "hard"
+    case relentless = "relentless"
+
+    var id: String { rawValue }
+
+    private var order: Int {
+        switch self {
+        case .easy:       return 0
+        case .medium:     return 1
+        case .hard:       return 2
+        case .relentless: return 3
+        }
+    }
+    static func < (lhs: BotDifficulty, rhs: BotDifficulty) -> Bool { lhs.order < rhs.order }
+
+    var label: String {
+        switch self {
+        case .easy:       return "Easy"
+        case .medium:     return "Medium"
+        case .hard:       return "Hard"
+        case .relentless: return "Relentless"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .easy:       return "Bots are slow and clumsy"
+        case .medium:     return "A fair fight"
+        case .hard:       return "Bots are quick and sharp"
+        case .relentless: return "They accelerate as you race"
+        }
+    }
+
+    var unlockRequirement: String {
+        switch self {
+        case .easy:       return ""
+        case .medium:     return "Win 1 race on Easy"
+        case .hard:       return "Win 2 races on Medium"
+        case .relentless: return "Win 1 race on Hard"
+        }
+    }
+
+    var prevDifficulty: BotDifficulty {
+        switch self {
+        case .easy:       return .easy
+        case .medium:     return .easy
+        case .hard:       return .medium
+        case .relentless: return .hard
+        }
+    }
+}
+
 // MARK: - Speed Levels
 
 enum SpeedLevel: String, CaseIterable, Identifiable, Codable {
@@ -80,6 +137,20 @@ final class SettingsStore: ObservableObject {
     // MARK: - Endless Mode
     @Published private(set) var endlessBestDistance: Int
 
+    // MARK: - Bot Race Preferences
+    @Published var preferredBotCount: Int          { didSet { saveBotPrefs() } }
+    @Published var preferredBotDifficulty: BotDifficulty { didSet { saveBotPrefs() } }
+    @Published private(set) var soloWinsEasy:   Int
+    @Published private(set) var soloWinsMedium: Int
+    @Published private(set) var soloWinsHard:   Int
+
+    var unlockedBotDifficulty: BotDifficulty {
+        if soloWinsHard   >= 1 { return .relentless }
+        if soloWinsMedium >= 2 { return .hard }
+        if soloWinsEasy   >= 1 { return .medium }
+        return .easy
+    }
+
     var remainingRoundsToUnlock: Int {
         max(0, 10 - totalRoundsPlayed)
     }
@@ -114,6 +185,14 @@ final class SettingsStore: ObservableObject {
         speedLevelsUnlocked = d.bool(forKey: "settings.speedUnlocked")
         endlessBestDistance = d.integer(forKey: "endless.bestDistance")
 
+        let storedBotCount = d.integer(forKey: "solo.botCount")
+        preferredBotCount      = storedBotCount > 0 ? storedBotCount : 1
+        let storedBotDiff      = d.string(forKey: "solo.botDifficulty")
+        preferredBotDifficulty = BotDifficulty(rawValue: storedBotDiff ?? "") ?? .easy
+        soloWinsEasy           = d.integer(forKey: "solo.wins.easy")
+        soloWinsMedium         = d.integer(forKey: "solo.wins.medium")
+        soloWinsHard           = d.integer(forKey: "solo.wins.hard")
+
         hasRemovedAds = d.bool(forKey: "settings.removeAdsPurchased")
 
         musicEnabled   = d.object(forKey: "settings.musicEnabled") as? Bool ?? true
@@ -143,6 +222,25 @@ final class SettingsStore: ObservableObject {
         endlessBestDistance = distance
         UserDefaults.standard.set(distance, forKey: "endless.bestDistance")
         return true
+    }
+
+    func recordSoloRaceWin(at difficulty: BotDifficulty) {
+        switch difficulty {
+        case .easy:       soloWinsEasy   += 1
+        case .medium:     soloWinsMedium += 1
+        case .hard:       soloWinsHard   += 1
+        case .relentless: break
+        }
+        saveBotPrefs()
+    }
+
+    private func saveBotPrefs() {
+        let d = UserDefaults.standard
+        d.set(preferredBotCount,              forKey: "solo.botCount")
+        d.set(preferredBotDifficulty.rawValue, forKey: "solo.botDifficulty")
+        d.set(soloWinsEasy,                   forKey: "solo.wins.easy")
+        d.set(soloWinsMedium,                 forKey: "solo.wins.medium")
+        d.set(soloWinsHard,                   forKey: "solo.wins.hard")
     }
 
     func markRemoveAdsPurchased() {

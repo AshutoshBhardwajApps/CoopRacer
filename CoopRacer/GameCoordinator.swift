@@ -37,6 +37,10 @@ final class GameCoordinator: ObservableObject {
     @Published var endlessLives: Int = 3
     @Published var isNewPersonalBest: Bool = false
 
+    // MARK: - Solo Bot Race
+    @Published var playerFinishPosition: Int = 1   // 1 = won, 2 = 2nd, etc.
+    var botDifficulty: BotDifficulty = .easy
+
     // Timer used ONLY for countdown, NOT race duration
     private var timer: AnyCancellable?
     private var lastStartTick: Int = 4
@@ -66,6 +70,7 @@ final class GameCoordinator: ObservableObject {
         endlessDistance = 0
         endlessLives = 3
         isNewPersonalBest = false
+        playerFinishPosition = 1
 
         timer?.cancel()
 

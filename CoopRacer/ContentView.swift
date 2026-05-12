@@ -10,6 +10,9 @@ struct ContentView: View {
     /// When true, single-player runs in endless survival mode (no finish line, 3 lives, score = distance).
     var isEndlessMode: Bool = false
 
+    var botCount: Int = 0
+    var botDifficulty: BotDifficulty = .easy
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var settings: SettingsStore
@@ -127,7 +130,7 @@ struct ContentView: View {
                 }
             }
         }) {
-            ResultsSheet(coordinator: coordinator, isSinglePlayer: isSinglePlayer, isEndlessMode: isEndlessMode) {
+            ResultsSheet(coordinator: coordinator, isSinglePlayer: isSinglePlayer, isEndlessMode: isEndlessMode, botCount: botCount, botDifficulty: botDifficulty) {
                 // --- PLAY AGAIN ---
                 pulse = false
                 winnerPulse = false
@@ -346,7 +349,9 @@ struct ContentView: View {
                                    coordinator: coordinator,
                                    carPNG: settings.player1Car,
                                    isFullWidth: true,
-                                   isEndlessMode: isEndlessMode)
+                                   isEndlessMode: isEndlessMode,
+                                   botCount: botCount,
+                                   botDifficulty: botDifficulty)
             rightScene = nil
         } else {
             let half = CGSize(width: size.width / 2, height: size.height)
@@ -531,6 +536,8 @@ private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
     var isSinglePlayer: Bool = false
     var isEndlessMode: Bool = false
+    var botCount: Int = 0
+    var botDifficulty: BotDifficulty = .easy
     @EnvironmentObject var settings: SettingsStore
     var playAgain: () -> Void
     var goHome: () -> Void
@@ -559,17 +566,39 @@ private struct ResultsSheet: View {
                 }
                 .padding(.horizontal, 32)
             } else if isSinglePlayer {
-                VStack(spacing: 6) {
-                    Text(settings.player1Name)
-                        .foregroundStyle(Theme.p1)
-                        .font(.headline).bold()
-                    Text("\(coordinator.p1Score)")
-                        .font(.system(size: 56, weight: .black, design: .rounded).monospacedDigit())
-                    Text("points")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if botCount > 0 {
+                    // Bot race: show finish position
+                    let pos = coordinator.playerFinishPosition
+                    VStack(spacing: 10) {
+                        Text(positionEmoji(pos))
+                            .font(.system(size: 64))
+                        Text(ordinalLabel(pos) + " Place")
+                            .font(.system(size: 40, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("of \(botCount + 1) racers")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if pos == 1 {
+                            Text("🏆 You won!")
+                                .font(.headline.bold())
+                                .foregroundStyle(.yellow)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .padding(.horizontal, 32)
+                } else {
+                    VStack(spacing: 6) {
+                        Text(settings.player1Name)
+                            .foregroundStyle(Theme.p1)
+                            .font(.headline).bold()
+                        Text("\(coordinator.p1Score)")
+                            .font(.system(size: 56, weight: .black, design: .rounded).monospacedDigit())
+                        Text("points")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 32)
                 }
-                .padding(.horizontal, 32)
             } else {
                 HStack {
                     VStack {
@@ -602,6 +631,31 @@ private struct ResultsSheet: View {
         }
         .padding(24)
         .presentationDetents([.medium])
+        .onAppear {
+            if isSinglePlayer && !isEndlessMode && botCount > 0 {
+                if coordinator.playerFinishPosition == 1 {
+                    SettingsStore.shared.recordSoloRaceWin(at: botDifficulty)
+                }
+            }
+        }
+    }
+
+    private func positionEmoji(_ pos: Int) -> String {
+        switch pos {
+        case 1:  return "🥇"
+        case 2:  return "🥈"
+        case 3:  return "🥉"
+        default: return "🏁"
+        }
+    }
+
+    private func ordinalLabel(_ n: Int) -> String {
+        switch n {
+        case 1: return "1st"
+        case 2: return "2nd"
+        case 3: return "3rd"
+        default: return "\(n)th"
+        }
     }
 }
 

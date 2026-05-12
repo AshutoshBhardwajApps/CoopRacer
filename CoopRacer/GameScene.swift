@@ -97,6 +97,29 @@ final class GameScene: SKScene {
     private var isRecovering = false
     private var slowVignette: SKShapeNode?
 
+    // MARK: - Bot opponents (solo race only)
+    private let botCount: Int
+    private let botDifficulty: BotDifficulty
+
+    private struct BotState {
+        var distanceAdvanced: CGFloat = 0
+        var x: CGFloat = 0
+        var speedMult: CGFloat = 1.0
+        var steeringRate: CGFloat = 3.0
+        var wobbleTarget: CGFloat = 0
+        var wobbleTimer: TimeInterval = 0
+        var isFinished: Bool = false
+        var node: SKSpriteNode
+    }
+    private var botStates: [BotState] = []
+    private var botsFinishedBeforePlayer: Int = 0
+
+    private static let botTints: [SKColor] = [
+        SKColor(red: 0.92, green: 0.15, blue: 0.10, alpha: 1.0),
+        SKColor(red: 0.08, green: 0.82, blue: 0.22, alpha: 1.0),
+        SKColor(red: 0.60, green: 0.08, blue: 0.95, alpha: 1.0),
+    ]
+
     // MARK: - Scenery (trees on both sides, full-width mode only)
     private var sceneryNodes: [SKNode] = []
     private let scenerySpacing: CGFloat = 90
@@ -119,7 +142,9 @@ final class GameScene: SKScene {
          coordinator: GameCoordinator,
          carPNG: String,
          isFullWidth: Bool = false,
-         isEndlessMode: Bool = false)
+         isEndlessMode: Bool = false,
+         botCount: Int = 0,
+         botDifficulty: BotDifficulty = .easy)
     {
         self.side = side
         self.input = input
@@ -127,6 +152,8 @@ final class GameScene: SKScene {
         self.chosenCarPNG = carPNG
         self.isFullWidth = isFullWidth
         self.isEndlessMode = isEndlessMode
+        self.botCount     = isEndlessMode ? 0 : botCount
+        self.botDifficulty = botDifficulty
         // Use current selected speed level for this scene
         self.difficulty = SettingsStore.shared.selectedSpeedLevel
 
@@ -213,6 +240,10 @@ final class GameScene: SKScene {
         if side == .right { carNode.zRotation = .pi }
         carNode.zPosition = 100
         addChild(carNode)
+
+        // Spawn bot cars (solo race only; reset is handled in prepareForNewRound)
+        botsFinishedBeforePlayer = 0
+        buildBots()
 
         // Place START just in front of the car (toward driving direction) — only in fixed-race modes
         if let sl = startLine {
@@ -573,6 +604,134 @@ final class GameScene: SKScene {
         return node
     }
 
+    // MARK: - Bot builders & helpers
+
+    private func buildBots() {
+        for state in botStates { state.node.removeFromParent() }
+        botStates.removeAll()
+        guard botCount > 0, isFullWidth, !isEndlessMode else { return }
+
+        for i in 0..<min(botCount, 3) {
+            let tint = GameScene.botTints[i]
+            let botNode = makePNGCar(textureName: SettingsStore.shared.player1Car, tint: tint)
+            botNode.zPosition = 90 + CGFloat(i)
+            addChild(botNode)
+
+            let startGap = CGFloat(i + 1) * 75
+            let (speedMult, steeringRate) = botParams(elapsed: 0)
+
+            let state = BotState(
+                distanceAdvanced: -startGap,
+                x: playableRect.midX,
+                speedMult: speedMult,
+                steeringRate: steeringRate,
+                wobbleTarget: CGFloat.random(in: -40...40),
+                wobbleTimer: Double.random(in: 0...1.5),
+                node: botNode
+            )
+            botStates.append(state)
+        }
+    }
+
+    private func botParams(elapsed: TimeInterval) -> (speedMult: CGFloat, steeringRate: CGFloat) {
+        switch botDifficulty {
+        case .easy:
+            return (0.82, 1.4)
+        case .medium:
+            return (1.00, 3.0)
+        case .hard:
+            return (1.14, 5.0)
+        case .relentless:
+            let t = CGFloat(min(1.0, elapsed / 30.0))
+            return (0.88 + 0.36 * t, 2.0 + 3.5 * t)
+        }
+    }
+
+    private func updateBots(dt: TimeInterval, stageSpeedBoost: CGFloat) {
+        for i in 0..<botStates.count {
+            var bot = botStates[i]
+            if bot.isFinished {
+                bot.node.isHidden = true
+                botStates[i] = bot
+                continue
+            }
+
+            // Ramp params for relentless difficulty
+            let (speedMult, steeringRate) = botParams(elapsed: elapsedRaceTime)
+            bot.speedMult     = speedMult
+            bot.steeringRate  = steeringRate
+
+            // Advance bot distance
+            let botSpeed = baseSpeed * bot.speedMult * stageSpeedBoost
+            bot.distanceAdvanced += botSpeed * CGFloat(dt)
+
+            // Screen Y relative to player
+            let botScreenY = initialCarY + CGFloat(bot.distanceAdvanced - distanceAdvanced)
+
+            // Wobble refresh
+            bot.wobbleTimer += dt
+            let wobbleInterval: TimeInterval
+            let wobbleRange: CGFloat
+            switch botDifficulty {
+            case .easy:       wobbleInterval = 0.9;  wobbleRange = 60
+            case .medium:     wobbleInterval = 1.5;  wobbleRange = 30
+            case .hard:       wobbleInterval = 2.2;  wobbleRange = 14
+            case .relentless: wobbleInterval = 1.8;  wobbleRange = max(8, 35 - 27 * CGFloat(min(1.0, elapsedRaceTime / 30.0)))
+            }
+            if bot.wobbleTimer >= wobbleInterval {
+                bot.wobbleTimer = 0
+                bot.wobbleTarget = CGFloat.random(in: -wobbleRange...wobbleRange)
+            }
+
+            // Target X
+            let midX = roadBounds(at: botScreenY).map { ($0.left + $0.right) / 2 } ?? playableRect.midX
+            var targetX = midX + bot.wobbleTarget
+
+            // Obstacle avoidance
+            let avoidProb: Double
+            switch botDifficulty {
+            case .easy:       avoidProb = 0.0
+            case .medium:     avoidProb = 0.50
+            case .hard:       avoidProb = 0.85
+            case .relentless: avoidProb = min(0.90, 0.40 + 0.50 * min(1.0, elapsedRaceTime / 30.0))
+            }
+            if avoidProb > 0 {
+                for obs in obstacles {
+                    let oy = obs.position.y
+                    if oy > botScreenY && oy < botScreenY + 80 && Double.random(in: 0...1) < avoidProb {
+                        let dx = obs.position.x - bot.x
+                        if abs(dx) < 30 {
+                            targetX = bot.x + (dx < 0 ? 45 : -45)
+                        }
+                    }
+                }
+            }
+
+            // Steer
+            let newX = bot.x + (targetX - bot.x) * bot.steeringRate * CGFloat(dt)
+            if let bounds = roadBounds(at: botScreenY) {
+                bot.x = max(bounds.left + carEdgePad, min(bounds.right - carEdgePad, newX))
+            } else {
+                bot.x = max(roadMinX, min(roadMaxX, newX))
+            }
+
+            // Show/hide + position
+            let onScreen = botScreenY > playableRect.minY - 100 && botScreenY < playableRect.maxY + 100
+            bot.node.isHidden = !onScreen
+            if onScreen {
+                bot.node.position = CGPoint(x: bot.x, y: botScreenY)
+            }
+
+            // Check finish
+            if !hasSignalledFinish && bot.distanceAdvanced >= totalTrackDistance {
+                bot.isFinished = true
+                botsFinishedBeforePlayer += 1
+            }
+
+            botStates[i] = bot
+        }
+    }
+
     private func addProgressBar() {
         let barWidth: CGFloat = 8
         let barHeight: CGFloat = playableRect.height * 0.9
@@ -622,6 +781,9 @@ final class GameScene: SKScene {
         distanceAdvanced = 0
         hasSignalledFinish = false
         isRecovering = false
+
+        botsFinishedBeforePlayer = 0
+        buildBots()
 
         // Reset car to original starting lane center
         carNode.removeAllActions()
@@ -1116,6 +1278,7 @@ final class GameScene: SKScene {
 
             if !hasSignalledFinish && ratio >= 1.0 {
                 hasSignalledFinish = true
+                coordinator?.playerFinishPosition = botsFinishedBeforePlayer + 1
 
                 if side == .left {
                     coordinator?.markFinished(player: 1)
@@ -1149,6 +1312,7 @@ final class GameScene: SKScene {
             updateRoadPath()
             layoutDashes()
             updateScenery(dy: dy)
+            if !botStates.isEmpty { updateBots(dt: dt, stageSpeedBoost: stageSpeedBoost) }
         } else {
             layoutDashes()
         }
