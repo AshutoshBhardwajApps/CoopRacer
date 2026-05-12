@@ -49,10 +49,21 @@ final class GameScene: SKScene {
     private var playableRect: CGRect = .zero
     private var laneWidth: CGFloat { playableRect.width * 0.40 }
 
-    // Full-width movement (tiny edge pad so wheels don’t clip)
+    // Full-width movement — bounds track the current live road half-width
     private var carEdgePad: CGFloat { 15 }
-    private var roadMinX: CGFloat { playableRect.minX + carEdgePad }
-    private var roadMaxX: CGFloat { playableRect.maxX - carEdgePad }
+    private var roadMinX: CGFloat { playableRect.midX - activeRoadHalfWidth + carEdgePad }
+    private var roadMaxX: CGFloat { playableRect.midX + activeRoadHalfWidth - carEdgePad }
+
+    // MARK: - Road width animation (narrow / wide sections like Road Fighter)
+    private var currentRoadHalfWidth: CGFloat = 0   // animates toward target
+    private var targetRoadHalfWidth:  CGFloat = 0   // set by the width-cycle logic
+    private let roadWidthChangeSpeed: CGFloat = 22  // pts/sec — smooth but visible
+    private var maxRoadHalfWidth:     CGFloat = 0   // stored at init from playableRect
+
+    /// Half-width used by rendering; falls back to full in two-player mode.
+    private var activeRoadHalfWidth: CGFloat {
+        isFullWidth ? currentRoadHalfWidth : playableRect.width / 2
+    }
 
     // Remember original spawn Y so restarts go back to true start
     private var initialCarY: CGFloat = 0
@@ -150,6 +161,11 @@ final class GameScene: SKScene {
 
         // Configure baseSpeed according to difficulty (Easy/Medium/Hard/Insane)
         configureBaseSpeed()
+
+        // Road width — start at full; animated per-frame in update()
+        maxRoadHalfWidth     = playableRect.width / 2
+        currentRoadHalfWidth = maxRoadHalfWidth
+        targetRoadHalfWidth  = maxRoadHalfWidth
 
         // Grass background + road shoulder lines (full-width modes only)
         if isFullWidth { buildBackground() }
@@ -389,11 +405,11 @@ final class GameScene: SKScene {
         return playableRect.midX + curveIntensity * maxRoadCurveShift * t * t
     }
 
-    /// Rebuilds the road polygon so both edges bend with the current curve.
-    /// Called once per frame whenever curveIntensity changes.
+    /// Rebuilds the road polygon so both edges bend with the current curve and width.
+    /// Called once per frame.
     private func updateRoadPath() {
         let segments = 28       // enough for a smooth bend
-        let halfW    = playableRect.width / 2
+        let halfW    = activeRoadHalfWidth
         let segH     = playableRect.height / CGFloat(segments)
 
         let path = CGMutablePath()
@@ -550,10 +566,12 @@ final class GameScene: SKScene {
         // Dashes back to base placement
         layoutDashes()
 
-        // Reset curve state
-        curvePhase         = 0
-        curveIntensity     = 0
-        prevCurveIntensity = 0
+        // Reset curve + width state
+        curvePhase           = 0
+        curveIntensity       = 0
+        prevCurveIntensity   = 0
+        currentRoadHalfWidth = maxRoadHalfWidth
+        targetRoadHalfWidth  = maxRoadHalfWidth
         updateRoadPath()
 
         // Rebuild scenery so trees get fresh random positions each run
@@ -719,18 +737,13 @@ final class GameScene: SKScene {
         return tree
     }
 
-    /// Scrolls scenery nodes with the world and wraps them when they leave the screen.
-    /// Trees drift opposite to the road bend (parallax — they're outside the road).
+    /// Scrolls scenery nodes vertically with the world and wraps them.
+    /// Trees keep their fixed X columns — the road bends past them, which IS the parallax.
     private func updateScenery(dy: CGFloat) {
-        let wrapHeight  = playableRect.height + scenerySpacing * 2
-        // Trees drift opposite & slower than the road shift (parallax)
-        let intensityDelta = curveIntensity - prevCurveIntensity
-        let treeDriftX     = -intensityDelta * maxRoadCurveShift * 0.45
-
+        let wrapHeight = playableRect.height + scenerySpacing * 2
         for node in sceneryNodes {
             node.position.y += dy
-            node.position.x += treeDriftX
-
+            // No X drift: trees are rooted; the road polygon shifts underneath them.
             if side == .left {
                 if node.position.y < playableRect.minY - scenerySpacing {
                     node.position.y += wrapHeight
@@ -858,10 +871,41 @@ final class GameScene: SKScene {
         node.zPosition = 40
         node.userData = ["touched": false]
 
-        // Spawn across the road width, centred on the bent road at the horizon
+        // Per-type idle animation
+        switch t {
+        case .tumbleweed:
+            node.run(.repeatForever(.rotate(byAngle: -.pi * 2, duration: 0.9)))
+        case .cone:
+            node.run(.repeatForever(.sequence([
+                .rotate(byAngle:  0.18, duration: 0.35),
+                .rotate(byAngle: -0.36, duration: 0.70),
+                .rotate(byAngle:  0.18, duration: 0.35)
+            ])))
+        case .squirrel:
+            node.run(.repeatForever(.sequence([
+                .scale(to: 1.25, duration: 0.28),
+                .scale(to: 0.88, duration: 0.28)
+            ])))
+        case .oilSlick:
+            node.run(.repeatForever(.sequence([
+                .fadeAlpha(to: 0.55, duration: 0.55),
+                .fadeAlpha(to: 1.00, duration: 0.55)
+            ])))
+        case .slowTruck:
+            // Truck bobs slightly side-to-side (like it's steering)
+            node.run(.repeatForever(.sequence([
+                .moveBy(x:  4, y: 0, duration: 0.5),
+                .moveBy(x: -8, y: 0, duration: 1.0),
+                .moveBy(x:  4, y: 0, duration: 0.5)
+            ])))
+        default:
+            break
+        }
+
+        // Spawn across the live road width, centred on the bent horizon
         let spawnY: CGFloat = (side == .left) ? playableRect.maxY + 30 : playableRect.minY - 30
         let spawnCX = isFullWidth ? roadCenterX(at: spawnY) : playableRect.midX
-        let halfW   = playableRect.width / 2 - carEdgePad
+        let halfW   = activeRoadHalfWidth - carEdgePad
         let x       = CGFloat.random(in: (spawnCX - halfW) ... (spawnCX + halfW))
         node.position = CGPoint(x: x, y: spawnY)
 
@@ -942,6 +986,26 @@ final class GameScene: SKScene {
 
         // Track elapsed race time for stage difficulty
         elapsedRaceTime += dt
+
+        // Road width cycle (full-width modes only) — narrow/wide sections like Road Fighter
+        if isFullWidth {
+            // 55-second loop: 20s wide → 18s medium → 17s narrow → repeat
+            let cycle = elapsedRaceTime.truncatingRemainder(dividingBy: 55.0)
+            if cycle < 20 {
+                targetRoadHalfWidth = maxRoadHalfWidth                       // full width
+            } else if cycle < 38 {
+                targetRoadHalfWidth = maxRoadHalfWidth * 0.62                // medium (2 lanes feel)
+            } else {
+                targetRoadHalfWidth = maxRoadHalfWidth * 0.40                // narrow (1 lane feel)
+            }
+            // Ease current toward target
+            let widthDelta = CGFloat(dt) * roadWidthChangeSpeed
+            if currentRoadHalfWidth < targetRoadHalfWidth {
+                currentRoadHalfWidth = min(targetRoadHalfWidth, currentRoadHalfWidth + widthDelta)
+            } else {
+                currentRoadHalfWidth = max(targetRoadHalfWidth, currentRoadHalfWidth - widthDelta)
+            }
+        }
 
         // Per-stage multipliers — endless mode climbs forever; fixed race uses 3 stages
         var stageSpeedBoost: CGFloat = 1.0
@@ -1140,7 +1204,12 @@ final class GameScene: SKScene {
             if input?.p2Left  == true { moveX += vx }
             if input?.p2Right == true { moveX -= vx }
         }
-        // Clamp across the full road width
+        // In full-width modes the road curve pushes the car laterally.
+        // Player must actively steer to stay centred on the bend — just like Road Fighter.
+        if isFullWidth && coordinator?.raceStarted == true {
+            moveX += curveIntensity * 52   // ~52 pts/s at maximum bend
+        }
+        // Clamp to the live (possibly narrowed) road bounds
         carNode.position.x = max(roadMinX, min(roadMaxX, carNode.position.x + moveX * CGFloat(dt)))
     }
 
