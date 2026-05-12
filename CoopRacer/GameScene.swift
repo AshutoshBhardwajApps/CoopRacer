@@ -119,9 +119,14 @@ final class GameScene: SKScene {
         var node: SKSpriteNode
         var crashPenaltyMult: CGFloat = 1.0
         var penaltyRecoveryTimer: CGFloat = 0
+        // Car-to-car contact
+        var collisionCooldown: TimeInterval = 0
+        var aggressionTimer: TimeInterval = 0
+        var isTargetingPlayer: Bool = false
     }
     private var botStates: [BotState] = []
     private var botsFinishedBeforePlayer: Int = 0
+    private var playerBumpCooldown: TimeInterval = 0   // global cooldown: can't be bumped again so soon
 
     private static let botTints: [SKColor] = [
         SKColor(red: 0.92, green: 0.15, blue: 0.10, alpha: 1.0),
@@ -654,6 +659,9 @@ final class GameScene: SKScene {
     }
 
     private func updateBots(dt: TimeInterval, stageSpeedBoost: CGFloat) {
+        // Decrement global player bump cooldown once per frame
+        if playerBumpCooldown > 0 { playerBumpCooldown -= dt }
+
         for i in 0..<botStates.count {
             var bot = botStates[i]
             if bot.isFinished {
@@ -666,7 +674,7 @@ final class GameScene: SKScene {
             let (_, steeringRate) = botParams(elapsed: elapsedRaceTime)
             bot.steeringRate = steeringRate
 
-            // Crash-penalty recovery (mirrors player applySmoothPenalty)
+            // Crash-penalty recovery
             if bot.crashPenaltyMult < 0.999 {
                 bot.penaltyRecoveryTimer += CGFloat(dt)
                 let dur: CGFloat = 2.5
@@ -674,17 +682,13 @@ final class GameScene: SKScene {
                 bot.crashPenaltyMult = 0.40 + 0.60 * (1 - pow(1 - t, 2))
             }
 
-            // Check whether a nearby obstacle will cause a crash
+            // Obstacle crash roll
             let failChance: Double
             switch botDifficulty {
-            case .easy:
-                failChance = 0.80
-            case .medium:
-                failChance = 0.50
-            case .hard:
-                failChance = 0.15
-            case .relentless:
-                failChance = max(0.08, 0.55 - 0.47 * min(1.0, elapsedRaceTime / 30.0))
+            case .easy:       failChance = 0.80
+            case .medium:     failChance = 0.50
+            case .hard:       failChance = 0.15
+            case .relentless: failChance = max(0.08, 0.55 - 0.47 * min(1.0, elapsedRaceTime / 30.0))
             }
 
             // Bot screen Y relative to player
@@ -708,7 +712,20 @@ final class GameScene: SKScene {
             let botSpeed = baseSpeed * bot.crashPenaltyMult * stageSpeedBoost
             bot.distanceAdvanced += botSpeed * CGFloat(dt)
 
-            // Wobble refresh
+            // ── Aggression (Hard / Relentless only) ──────────────────────────
+            bot.aggressionTimer -= dt
+            if bot.aggressionTimer <= 0 {
+                let aggressionChance: Double
+                switch botDifficulty {
+                case .easy, .medium: aggressionChance = 0.0
+                case .hard:          aggressionChance = 0.25
+                case .relentless:    aggressionChance = min(0.55, 0.20 + 0.35 * min(1.0, elapsedRaceTime / 30.0))
+                }
+                bot.isTargetingPlayer = Double.random(in: 0...1) < aggressionChance
+                bot.aggressionTimer   = Double.random(in: 1.5...3.0)
+            }
+
+            // Wobble refresh (only when NOT targeting player)
             bot.wobbleTimer += dt
             let wobbleInterval: TimeInterval
             let wobbleRange: CGFloat
@@ -722,14 +739,20 @@ final class GameScene: SKScene {
             }
             if bot.wobbleTimer >= wobbleInterval {
                 bot.wobbleTimer = 0
-                bot.wobbleTarget = CGFloat.random(in: -wobbleRange...wobbleRange)
+                bot.wobbleTarget = bot.isTargetingPlayer ? 0 : CGFloat.random(in: -wobbleRange...wobbleRange)
             }
 
-            // Target X = road centre + wobble
+            // Target X — switch to chasing player when aggressive
             let midX = roadBounds(at: botScreenY).map { ($0.left + $0.right) / 2 } ?? playableRect.midX
-            var targetX = midX + bot.wobbleTarget
+            var targetX: CGFloat
+            if bot.isTargetingPlayer {
+                // Aim at player's X with small noise so it's not pixel-perfect
+                targetX = carNode.position.x + CGFloat.random(in: -12...12)
+            } else {
+                targetX = midX + bot.wobbleTarget
+            }
 
-            // Obstacle avoidance steering (separate from crash roll above)
+            // Obstacle avoidance steering
             let avoidProb: Double
             switch botDifficulty {
             case .easy:       avoidProb = 0.20
@@ -753,6 +776,38 @@ final class GameScene: SKScene {
                 bot.x = max(bounds.left + carEdgePad, min(bounds.right - carEdgePad, newX))
             } else {
                 bot.x = max(roadMinX, min(roadMaxX, newX))
+            }
+
+            // ── Car-to-car collision ──────────────────────────────────────────
+            bot.collisionCooldown -= dt
+            let cDx = abs(bot.x - carNode.position.x)
+            let cDy = abs(botScreenY - carNode.position.y)
+            if bot.collisionCooldown <= 0 && cDx < 26 && cDy < 36 {
+                bot.collisionCooldown = 2.0
+
+                // Visual: both cars flash
+                let flash = SKAction.sequence([
+                    .fadeAlpha(to: 0.35, duration: 0.05),
+                    .fadeAlpha(to: 1.00, duration: 0.18)
+                ])
+                carNode.run(flash)
+                bot.node.run(flash)
+                playCrash()
+
+                // Bump player (if cooldown expired)
+                applyBumpPenalty()
+
+                // Also slow the bot that hit us
+                if bot.crashPenaltyMult > 0.65 {
+                    bot.crashPenaltyMult = 0.65
+                    bot.penaltyRecoveryTimer = 0
+                }
+
+                // Separate the cars laterally so they don't get stuck
+                let push: CGFloat = 18
+                let playerIsLeft = carNode.position.x < bot.x
+                carNode.position.x += playerIsLeft ? -push : push
+                bot.x              += playerIsLeft ?  push : -push
             }
 
             // Show/hide + position
@@ -824,6 +879,7 @@ final class GameScene: SKScene {
         boostCharge = 0
 
         botsFinishedBeforePlayer = 0
+        playerBumpCooldown = 0
         buildBots()
 
         // Reset car to original starting lane center
@@ -1486,6 +1542,43 @@ final class GameScene: SKScene {
             .changeVolume(to: 0.08, duration: 0.06),
             .changeVolume(to: 0.45, duration: 0.35)
         ]))
+    }
+
+    // MARK: - Car-to-car bump (lighter penalty, 1.2 s)
+    private func applyBumpPenalty() {
+        guard playerBumpCooldown <= 0 else { return }
+        playerBumpCooldown = 2.0
+
+        let minMul: CGFloat = 0.60
+        speedMultiplier = min(speedMultiplier, minMul)
+
+        // Orange-tinted vignette to distinguish from obstacle hits (red)
+        slowVignette?.removeAllActions()
+        slowVignette?.run(.sequence([
+            .fadeAlpha(to: 0.28, duration: 0.06),
+            .fadeAlpha(to: 0.0,  duration: 0.45)
+        ]))
+        engineNode?.run(.sequence([
+            .changeVolume(to: 0.15, duration: 0.08),
+            .changeVolume(to: 0.45, duration: 0.30)
+        ]))
+
+        removeAction(forKey: "bump")
+        let steps = 60
+        let stepDur = 1.2 / Double(steps)
+        var i = 0
+        let action = SKAction.repeat(SKAction.sequence([
+            SKAction.run { [weak self] in
+                guard let self else { return }
+                i += 1
+                let t = min(1.0, CGFloat(i) / CGFloat(steps))
+                let eased = 1 - pow(1 - t, 2)
+                self.speedMultiplier = max(self.speedMultiplier, minMul + (1.0 - minMul) * eased)
+            },
+            SKAction.wait(forDuration: stepDur)
+        ]), count: steps)
+
+        run(action, withKey: "bump")
     }
 
     // MARK: - Penalty easing (3s, strong)
