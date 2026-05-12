@@ -127,6 +127,7 @@ final class GameScene: SKScene {
     private var botStates: [BotState] = []
     private var botsFinishedBeforePlayer: Int = 0
     private var playerBumpCooldown: TimeInterval = 0   // global cooldown: can't be bumped again so soon
+    private var playerStartX: CGFloat = 0              // grid-assigned start X for the player car
 
     private static let botTints: [SKColor] = [
         SKColor(red: 0.92, green: 0.15, blue: 0.10, alpha: 1.0),
@@ -202,8 +203,8 @@ final class GameScene: SKScene {
         // Configure baseSpeed according to difficulty (Easy/Medium/Hard/Insane)
         configureBaseSpeed()
 
-        // Initialise angular road control points
-        if isFullWidth { initRoadPoints() }
+        // Angular road only in endless mode; solo race stays straight
+        if isFullWidth && isEndlessMode { initRoadPoints() }
 
         // Grass background + road shoulder lines (full-width modes only)
         if isFullWidth { buildBackground() }
@@ -623,24 +624,42 @@ final class GameScene: SKScene {
     private func buildBots() {
         for state in botStates { state.node.removeFromParent() }
         botStates.removeAll()
+
+        // Spread all cars (player + bots) evenly across road width for grid start
+        let totalCars  = botCount + 1
+        let margin: CGFloat = carEdgePad + 20
+        let roadLeft   = playableRect.minX + margin
+        let roadRight  = playableRect.maxX - margin
+        let slotWidth  = (roadRight - roadLeft) / CGFloat(totalCars)
+        let playerSlot = (totalCars - 1) / 2   // player gets middle slot
+
+        playerStartX       = roadLeft + slotWidth * CGFloat(playerSlot) + slotWidth / 2
+        carNode.position.x = playerStartX
+
         guard botCount > 0, isFullWidth, !isEndlessMode else { return }
 
+        // Remaining slots go to bots
+        let botSlots = (0..<totalCars).filter { $0 != playerSlot }
+
         for i in 0..<min(botCount, 3) {
-            let tint = GameScene.botTints[i]
+            let tint    = GameScene.botTints[i]
             let botNode = makePNGCar(textureName: SettingsStore.shared.player1Car, tint: tint)
             botNode.zPosition = 90 + CGFloat(i)
+
+            let slot   = botSlots[i]
+            let startX = roadLeft + slotWidth * CGFloat(slot) + slotWidth / 2
+            botNode.position = CGPoint(x: startX, y: initialCarY)
             addChild(botNode)
 
-            let startGap = CGFloat(i + 1) * 75
             let (speedMult, steeringRate) = botParams(elapsed: 0)
 
             let state = BotState(
-                distanceAdvanced: -startGap,
-                x: playableRect.midX,
+                distanceAdvanced: 0,     // same start line as player
+                x: startX,
                 speedMult: speedMult,
                 steeringRate: steeringRate,
-                wobbleTarget: CGFloat.random(in: -40...40),
-                wobbleTimer: Double.random(in: 0...1.5),
+                wobbleTarget: CGFloat.random(in: -20...20),
+                wobbleTimer: Double.random(in: 0...1.0),
                 node: botNode
             )
             botStates.append(state)
@@ -649,12 +668,12 @@ final class GameScene: SKScene {
 
     private func botParams(elapsed: TimeInterval) -> (speedMult: CGFloat, steeringRate: CGFloat) {
         switch botDifficulty {
-        case .easy:       return (1.0, 1.4)
-        case .medium:     return (1.0, 3.0)
-        case .hard:       return (1.0, 5.0)
+        case .easy:       return (0.88, 1.4)   // slower, clumsy
+        case .medium:     return (1.00, 3.0)   // matched speed, decent steering
+        case .hard:       return (1.14, 5.0)   // genuinely faster + sharp
         case .relentless:
             let t = CGFloat(min(1.0, elapsed / 30.0))
-            return (1.0, 2.0 + 3.5 * t)
+            return (0.92 + 0.28 * t, 2.0 + 3.5 * t)   // 0.92→1.20, steering tightens
         }
     }
 
@@ -670,8 +689,9 @@ final class GameScene: SKScene {
                 continue
             }
 
-            // Ramp steeringRate (relentless gets sharper over time; speedMult is always 1.0)
-            let (_, steeringRate) = botParams(elapsed: elapsedRaceTime)
+            // Update speed + steering for this frame (relentless ramps both over time)
+            let (speedMult, steeringRate) = botParams(elapsed: elapsedRaceTime)
+            bot.speedMult    = speedMult
             bot.steeringRate = steeringRate
 
             // Crash-penalty recovery
@@ -708,8 +728,8 @@ final class GameScene: SKScene {
                 }
             }
 
-            // Advance bot distance: base speed × crash penalty × stage boost
-            let botSpeed = baseSpeed * bot.crashPenaltyMult * stageSpeedBoost
+            // Advance bot distance: base speed × difficulty mult × crash penalty × stage boost
+            let botSpeed = baseSpeed * bot.speedMult * bot.crashPenaltyMult * stageSpeedBoost
             bot.distanceAdvanced += botSpeed * CGFloat(dt)
 
             // ── Aggression (Hard / Relentless only) ──────────────────────────
@@ -882,16 +902,16 @@ final class GameScene: SKScene {
         playerBumpCooldown = 0
         buildBots()
 
-        // Reset car to original starting lane center
+        // Reset car to grid start position
         carNode.removeAllActions()
-        carNode.position = CGPoint(x: playableRect.midX, y: initialCarY)
+        carNode.position = CGPoint(x: playerStartX, y: initialCarY)
         carNode.zRotation = (side == .right) ? .pi : 0
 
         // Dashes back to base placement
         layoutDashes()
 
-        // Reset road control points
-        if isFullWidth { initRoadPoints() }
+        // Reset road control points (endless only; solo race stays straight)
+        if isFullWidth && isEndlessMode { initRoadPoints() }
         updateRoadPath()
 
         // Rebuild scenery so trees get fresh random positions each run
@@ -1403,17 +1423,15 @@ final class GameScene: SKScene {
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
 
         if isFullWidth {
-            // Scroll all control points with the world
-            for i in 0..<roadPoints.count { roadPoints[i].y += dy }
-
-            // Drop points that have scrolled past the bottom buffer zone
-            let cutoff = playableRect.minY - pointSpacing * 2
-            roadPoints.removeAll { $0.y < cutoff }
-
-            // Generate new points at the top until we have enough ahead
-            let horizon = playableRect.maxY + pointSpacing * 3
-            while roadPoints.last.map({ $0.y }) ?? 0 < horizon {
-                generateNextPoint()
+            // Angular road updates only in endless mode; solo race is straight
+            if isEndlessMode {
+                for i in 0..<roadPoints.count { roadPoints[i].y += dy }
+                let cutoff = playableRect.minY - pointSpacing * 2
+                roadPoints.removeAll { $0.y < cutoff }
+                let horizon = playableRect.maxY + pointSpacing * 3
+                while roadPoints.last.map({ $0.y }) ?? 0 < horizon {
+                    generateNextPoint()
+                }
             }
 
             updateRoadPath()
