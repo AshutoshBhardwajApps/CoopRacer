@@ -79,6 +79,17 @@ final class GameScene: SKScene {
     private var isRecovering = false
     private var slowVignette: SKShapeNode?
 
+    // MARK: - Scenery (trees on both sides, full-width mode only)
+    private var sceneryNodes: [SKNode] = []
+    private let scenerySpacing: CGFloat = 90
+    private let sceneryCount:   Int     = 14   // per side; extra covers wrap gaps
+
+    // MARK: - Road curve (faux sine-wave lateral shift of road content)
+    private var curvePhase:   Double   = 0     // advances over time
+    private var curveDeltaX:  CGFloat  = 0     // lateral shift to apply this frame
+    private let curveCycleSpeed: Double   = 0.28  // radians / second — gentle, ~22 s per full bend
+    private let curveAmplitude:  CGFloat  = 24    // max pixels of lateral drift
+
     // Pause tracking (so we only fade once)
     private var wasPaused: Bool = false
 
@@ -136,6 +147,9 @@ final class GameScene: SKScene {
         // Configure baseSpeed according to difficulty (Easy/Medium/Hard/Insane)
         configureBaseSpeed()
 
+        // Grass background + road shoulder lines (full-width modes only)
+        if isFullWidth { buildBackground() }
+
         // Road (grey so wheels pop)
         roadNode = SKShapeNode(rect: playableRect, cornerRadius: 10)
         roadNode.fillColor = SKColor(white: 0.18, alpha: 1.0)
@@ -143,6 +157,9 @@ final class GameScene: SKScene {
         roadNode.lineWidth = 2
         roadNode.zPosition = 5
         addChild(roadNode)
+
+        // Scrolling tree scenery on both sides (full-width modes only)
+        if isFullWidth { buildScenery() }
 
         // Center dashed line (phase-driven, *never* flickers)
         buildDashes()
@@ -222,8 +239,10 @@ final class GameScene: SKScene {
         spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
+        curvePhase = 0
+        curveDeltaX = 0
         elapsedRaceTime = 0
-        layoutDashes() // initial placement
+        layoutDashes(xOffset: 0)
         wasPaused = false
     }
 
@@ -349,8 +368,10 @@ final class GameScene: SKScene {
         }
     }
 
-    // Position dashes using a phase that mirrors per side
-    private func layoutDashes() {
+    // Position dashes using a phase that mirrors per side.
+    // xOffset shifts the centre line laterally (used by the road-curve effect).
+    private func layoutDashes(xOffset: CGFloat = 0) {
+        let cx = playableRect.midX + xOffset
         for (i, dash) in dashNodes.enumerated() {
             let base = CGFloat(i) * dashSpacing
 
@@ -359,14 +380,14 @@ final class GameScene: SKScene {
                 // RED (bottom): dashes should visually move DOWN as time passes
                 let yStart = playableRect.minY + base - dashPhase
                 let yEnd   = yStart + dashLen
-                p.move(to: CGPoint(x: playableRect.midX, y: yStart))
-                p.addLine(to: CGPoint(x: playableRect.midX, y: yEnd))
+                p.move(to: CGPoint(x: cx, y: yStart))
+                p.addLine(to: CGPoint(x: cx, y: yEnd))
             } else {
                 // BLUE (top): mirrored — dashes should visually move UP as time passes
                 let yStart = playableRect.maxY - base + dashPhase
                 let yEnd   = yStart - dashLen
-                p.move(to: CGPoint(x: playableRect.midX, y: yStart))
-                p.addLine(to: CGPoint(x: playableRect.midX, y: yEnd))
+                p.move(to: CGPoint(x: cx, y: yStart))
+                p.addLine(to: CGPoint(x: cx, y: yEnd))
             }
 
             dash.path = p
@@ -483,6 +504,13 @@ final class GameScene: SKScene {
         // Dashes back to base placement
         layoutDashes()
 
+        // Reset curve state
+        curvePhase  = 0
+        curveDeltaX = 0
+
+        // Rebuild scenery so trees get fresh random positions each run
+        if isFullWidth { buildScenery() }
+
         if isEndlessMode {
             // Endless mode: no finish line, no progress bar — just reset distance tracking
             distanceAdvanced = 0
@@ -550,6 +578,129 @@ final class GameScene: SKScene {
         v.isUserInteractionEnabled = false
         addChild(v)
         slowVignette = v
+    }
+
+    // MARK: - Background & Scenery
+
+    /// Fills the screen with grass green and adds white road-shoulder lines.
+    private func buildBackground() {
+        // Grass background (sits behind everything)
+        let bg = SKShapeNode(rect: CGRect(origin: .zero, size: size))
+        bg.fillColor = SKColor(red: 0.18, green: 0.40, blue: 0.10, alpha: 1.0)
+        bg.strokeColor = .clear
+        bg.zPosition = 0
+        addChild(bg)
+
+        // Darker strip tight against each road edge — like a dirt/gravel shoulder
+        for sign: CGFloat in [-1, 1] {
+            let edgeX = sign > 0 ? playableRect.maxX : playableRect.minX
+            let stripW: CGFloat = size.width * 0.06
+            let stripX = sign > 0 ? edgeX : edgeX - stripW
+            let strip = SKShapeNode(rect: CGRect(x: stripX, y: 0, width: stripW, height: size.height))
+            strip.fillColor = SKColor(red: 0.55, green: 0.44, blue: 0.20, alpha: 1.0)   // sandy dirt
+            strip.strokeColor = .clear
+            strip.zPosition = 1
+            addChild(strip)
+        }
+
+        // White shoulder lines on both road edges
+        for xPos in [playableRect.minX + 3, playableRect.maxX - 3] {
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: xPos, y: 0))
+            path.addLine(to: CGPoint(x: xPos, y: size.height))
+            let line = SKShapeNode(path: path)
+            line.strokeColor = SKColor(white: 1.0, alpha: 0.55)
+            line.lineWidth = 3
+            line.zPosition = 17
+            addChild(line)
+        }
+    }
+
+    /// Builds `sceneryCount` trees on each side of the road, evenly spaced vertically.
+    private func buildScenery() {
+        sceneryNodes.forEach { $0.removeFromParent() }
+        sceneryNodes.removeAll()
+
+        let leftBand  = (min: CGFloat(4),             max: playableRect.minX - 6)
+        let rightBand = (min: playableRect.maxX + 6,  max: size.width - 4)
+
+        for i in 0..<sceneryCount {
+            let yBase = playableRect.minY + CGFloat(i) * scenerySpacing
+
+            // Left tree
+            if leftBand.max > leftBand.min {
+                let lx = CGFloat.random(in: leftBand.min ... leftBand.max)
+                let lt = makeTree(scale: CGFloat.random(in: 0.80 ... 1.20))
+                lt.position = CGPoint(x: lx, y: yBase)
+                lt.zPosition = 4
+                addChild(lt)
+                sceneryNodes.append(lt)
+            }
+
+            // Right tree
+            if rightBand.max > rightBand.min {
+                let rx = CGFloat.random(in: rightBand.min ... rightBand.max)
+                let rt = makeTree(scale: CGFloat.random(in: 0.80 ... 1.20))
+                rt.position = CGPoint(x: rx, y: yBase)
+                rt.zPosition = 4
+                addChild(rt)
+                sceneryNodes.append(rt)
+            }
+        }
+    }
+
+    /// Procedural pixel-art style tree — layered foliage circles on a trunk.
+    private func makeTree(scale: CGFloat = 1.0) -> SKNode {
+        let tree = SKNode()
+
+        // Trunk
+        let trunk = SKShapeNode(rectOf: CGSize(width: 7 * scale, height: 18 * scale), cornerRadius: 2)
+        trunk.fillColor = SKColor(red: 0.32, green: 0.18, blue: 0.06, alpha: 1.0)
+        trunk.strokeColor = .clear
+        trunk.position = CGPoint(x: 0, y: -7 * scale)
+        trunk.zPosition = 1
+        tree.addChild(trunk)
+
+        // Three overlapping foliage blobs (bottom-large → top-small for depth)
+        let layers: [(radius: CGFloat, yOff: CGFloat)] = [
+            (19 * scale,  4 * scale),
+            (15 * scale, 14 * scale),
+            (11 * scale, 22 * scale),
+        ]
+        for (radius, yOff) in layers {
+            let blob = SKShapeNode(circleOfRadius: radius)
+            let g = CGFloat.random(in: 0.38 ... 0.60)
+            blob.fillColor   = SKColor(red: 0.04, green: g, blue: 0.04, alpha: 1.0)
+            blob.strokeColor = SKColor(red: 0.02, green: g * 0.65, blue: 0.02, alpha: 0.7)
+            blob.lineWidth   = 1
+            blob.position    = CGPoint(x: CGFloat.random(in: -3 ... 3) * scale, y: yOff)
+            blob.zPosition   = 2
+            tree.addChild(blob)
+        }
+
+        return tree
+    }
+
+    /// Scrolls scenery nodes with the world and wraps them when they leave the screen.
+    /// Also applies a parallax fraction of the road's lateral curve shift.
+    private func updateScenery(dy: CGFloat) {
+        let wrapHeight = playableRect.height + scenerySpacing * 2
+        for node in sceneryNodes {
+            node.position.y += dy
+            // Mild parallax: trees drift opposite to road curve (they're "outside" the road)
+            node.position.x -= curveDeltaX * 0.45
+
+            // Wrap vertically so the scenery fills endlessly
+            if side == .left {
+                if node.position.y < playableRect.minY - scenerySpacing {
+                    node.position.y += wrapHeight
+                }
+            } else {
+                if node.position.y > playableRect.maxY + scenerySpacing {
+                    node.position.y -= wrapHeight
+                }
+            }
+        }
     }
 
     // MARK: - Obstacles
@@ -832,7 +983,22 @@ final class GameScene: SKScene {
 
         // Center dashed line via PHASE (never flickers)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
-        layoutDashes()
+
+        // Road curve — sine-wave lateral shift of road content (full-width modes only)
+        if isFullWidth {
+            let prevOffset = CGFloat(sin(curvePhase) * Double(curveAmplitude))
+            curvePhase  += dt * curveCycleSpeed
+            let newOffset  = CGFloat(sin(curvePhase) * Double(curveAmplitude))
+            curveDeltaX    = newOffset - prevOffset
+
+            // Shift every live obstacle with the road
+            for ob in obstacles { ob.position.x += curveDeltaX }
+
+            layoutDashes(xOffset: newOffset)
+            updateScenery(dy: dy)
+        } else {
+            layoutDashes()
+        }
 
         // Move checkered lines with the world (start line exists in all modes; finish only in fixed race)
         if let sl = startLine { sl.position.y += dy }
