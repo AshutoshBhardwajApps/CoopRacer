@@ -182,8 +182,9 @@ final class GameScene: SKScene {
         // Scrolling tree scenery on both sides (full-width modes only)
         if isFullWidth { buildScenery() }
 
-        // Center dashed line (phase-driven, *never* flickers)
+        // Center dashed line — hidden in endless mode (open road feel)
         buildDashes()
+        if isEndlessMode { dashNodes.forEach { $0.alpha = 0 } }
 
         // Start / Finish — only built in the fixed-race modes; endless has no finish line
         if !isEndlessMode {
@@ -1203,11 +1204,6 @@ final class GameScene: SKScene {
             // mirrored for top player
             if input?.p2Left  == true { moveX += vx }
             if input?.p2Right == true { moveX -= vx }
-        }
-        // In full-width modes the road curve pushes the car laterally.
-        // Player must actively steer to stay centred on the bend — just like Road Fighter.
-        if isFullWidth && coordinator?.raceStarted == true {
-            moveX += curveIntensity * 52   // ~52 pts/s at maximum bend
         }
         // Clamp to the live (possibly narrowed) road bounds
         carNode.position.x = max(roadMinX, min(roadMaxX, carNode.position.x + moveX * CGFloat(dt)))
