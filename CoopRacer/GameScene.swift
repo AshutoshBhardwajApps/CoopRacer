@@ -84,11 +84,15 @@ final class GameScene: SKScene {
     private let scenerySpacing: CGFloat = 90
     private let sceneryCount:   Int     = 14   // per side; extra covers wrap gaps
 
-    // MARK: - Road curve (faux sine-wave lateral shift of road content)
-    private var curvePhase:   Double   = 0     // advances over time
-    private var curveDeltaX:  CGFloat  = 0     // lateral shift to apply this frame
-    private let curveCycleSpeed: Double   = 0.28  // radians / second — gentle, ~22 s per full bend
-    private let curveAmplitude:  CGFloat  = 24    // max pixels of lateral drift
+    // MARK: - Road curve (proper per-Y polygon bend, Road Fighter style)
+    // The road bottom stays centred (near the car = zero shift).
+    // The road top shifts left/right (far horizon = full shift).
+    // Every frame the road polygon, dashes, and obstacles are recomputed.
+    private var curvePhase:        Double  = 0     // sine input, advances over time
+    private var curveIntensity:    CGFloat = 0     // current sin value  (-1 … +1)
+    private var prevCurveIntensity: CGFloat = 0    // last frame's value (for delta)
+    private let curveCycleSpeed:   Double  = 0.28  // radians/s → ~22 s per full bend
+    private let maxRoadCurveShift: CGFloat = 78    // px shift at the very top of road
 
     // Pause tracking (so we only fade once)
     private var wasPaused: Bool = false
@@ -150,13 +154,14 @@ final class GameScene: SKScene {
         // Grass background + road shoulder lines (full-width modes only)
         if isFullWidth { buildBackground() }
 
-        // Road (grey so wheels pop)
-        roadNode = SKShapeNode(rect: playableRect, cornerRadius: 10)
-        roadNode.fillColor = SKColor(white: 0.18, alpha: 1.0)
-        roadNode.strokeColor = SKColor(white: 1.0, alpha: 0.15)
-        roadNode.lineWidth = 2
-        roadNode.zPosition = 5
+        // Road — path is built dynamically each frame so it bends with the curve
+        roadNode = SKShapeNode()
+        roadNode.fillColor   = SKColor(white: 0.18, alpha: 1.0)
+        roadNode.strokeColor = SKColor(white: 1.0,  alpha: 0.50)  // bent shoulder lines for free
+        roadNode.lineWidth   = 3
+        roadNode.zPosition   = 5
         addChild(roadNode)
+        updateRoadPath()    // set initial straight path
 
         // Scrolling tree scenery on both sides (full-width modes only)
         if isFullWidth { buildScenery() }
@@ -239,10 +244,11 @@ final class GameScene: SKScene {
         spawnAccum = 0
         speedMultiplier = 1
         dashPhase = 0
-        curvePhase = 0
-        curveDeltaX = 0
-        elapsedRaceTime = 0
-        layoutDashes(xOffset: 0)
+        curvePhase         = 0
+        curveIntensity     = 0
+        prevCurveIntensity = 0
+        elapsedRaceTime    = 0
+        layoutDashes()
         wasPaused = false
     }
 
@@ -368,24 +374,64 @@ final class GameScene: SKScene {
         }
     }
 
-    // Position dashes using a phase that mirrors per side.
-    // xOffset shifts the centre line laterally (used by the road-curve effect).
-    private func layoutDashes(xOffset: CGFloat = 0) {
-        let cx = playableRect.midX + xOffset
+    // MARK: - Road curve helpers
+
+    /// X coordinate of the road centre at a given scene Y, accounting for the current curve.
+    /// Bottom of the road (near the car) has zero shift; top (far horizon) has full shift.
+    private func roadCenterX(at sceneY: CGFloat) -> CGFloat {
+        guard isFullWidth else { return playableRect.midX }
+        // t: 0 = bottom/near-car, 1 = top/horizon  (flipped for top player)
+        let raw: CGFloat = (side == .left)
+            ? (sceneY - playableRect.minY) / playableRect.height
+            : (playableRect.maxY - sceneY) / playableRect.height
+        let t = max(0, min(1, raw))
+        // Quadratic easing: shift accelerates into the distance
+        return playableRect.midX + curveIntensity * maxRoadCurveShift * t * t
+    }
+
+    /// Rebuilds the road polygon so both edges bend with the current curve.
+    /// Called once per frame whenever curveIntensity changes.
+    private func updateRoadPath() {
+        let segments = 28       // enough for a smooth bend
+        let halfW    = playableRect.width / 2
+        let segH     = playableRect.height / CGFloat(segments)
+
+        let path = CGMutablePath()
+        var leftPts:  [CGPoint] = []
+        var rightPts: [CGPoint] = []
+
+        for i in 0...segments {
+            let y  = playableRect.minY + CGFloat(i) * segH
+            let cx = roadCenterX(at: y)
+            leftPts.append(CGPoint(x: cx - halfW, y: y))
+            rightPts.append(CGPoint(x: cx + halfW, y: y))
+        }
+
+        // Walk left edge bottom → top, right edge top → bottom
+        path.move(to: leftPts[0])
+        for pt in leftPts.dropFirst() { path.addLine(to: pt) }
+        for pt in rightPts.reversed() { path.addLine(to: pt) }
+        path.closeSubpath()
+
+        roadNode.path = path
+    }
+
+    // Position dashes — each one independently follows roadCenterX at its Y.
+    private func layoutDashes() {
         for (i, dash) in dashNodes.enumerated() {
             let base = CGFloat(i) * dashSpacing
 
             let p = CGMutablePath()
             if side == .left {
-                // RED (bottom): dashes should visually move DOWN as time passes
                 let yStart = playableRect.minY + base - dashPhase
                 let yEnd   = yStart + dashLen
+                let cx     = roadCenterX(at: yStart)
                 p.move(to: CGPoint(x: cx, y: yStart))
                 p.addLine(to: CGPoint(x: cx, y: yEnd))
             } else {
-                // BLUE (top): mirrored — dashes should visually move UP as time passes
                 let yStart = playableRect.maxY - base + dashPhase
                 let yEnd   = yStart - dashLen
+                let cx     = roadCenterX(at: yStart)
                 p.move(to: CGPoint(x: cx, y: yStart))
                 p.addLine(to: CGPoint(x: cx, y: yEnd))
             }
@@ -505,8 +551,10 @@ final class GameScene: SKScene {
         layoutDashes()
 
         // Reset curve state
-        curvePhase  = 0
-        curveDeltaX = 0
+        curvePhase         = 0
+        curveIntensity     = 0
+        prevCurveIntensity = 0
+        updateRoadPath()
 
         // Rebuild scenery so trees get fresh random positions each run
         if isFullWidth { buildScenery() }
@@ -603,17 +651,7 @@ final class GameScene: SKScene {
             addChild(strip)
         }
 
-        // White shoulder lines on both road edges
-        for xPos in [playableRect.minX + 3, playableRect.maxX - 3] {
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: xPos, y: 0))
-            path.addLine(to: CGPoint(x: xPos, y: size.height))
-            let line = SKShapeNode(path: path)
-            line.strokeColor = SKColor(white: 1.0, alpha: 0.55)
-            line.lineWidth = 3
-            line.zPosition = 17
-            addChild(line)
-        }
+        // Road shoulder lines are now part of roadNode's stroke (they bend with the road).
     }
 
     /// Builds `sceneryCount` trees on each side of the road, evenly spaced vertically.
@@ -682,15 +720,17 @@ final class GameScene: SKScene {
     }
 
     /// Scrolls scenery nodes with the world and wraps them when they leave the screen.
-    /// Also applies a parallax fraction of the road's lateral curve shift.
+    /// Trees drift opposite to the road bend (parallax — they're outside the road).
     private func updateScenery(dy: CGFloat) {
-        let wrapHeight = playableRect.height + scenerySpacing * 2
+        let wrapHeight  = playableRect.height + scenerySpacing * 2
+        // Trees drift opposite & slower than the road shift (parallax)
+        let intensityDelta = curveIntensity - prevCurveIntensity
+        let treeDriftX     = -intensityDelta * maxRoadCurveShift * 0.45
+
         for node in sceneryNodes {
             node.position.y += dy
-            // Mild parallax: trees drift opposite to road curve (they're "outside" the road)
-            node.position.x -= curveDeltaX * 0.45
+            node.position.x += treeDriftX
 
-            // Wrap vertically so the scenery fills endlessly
             if side == .left {
                 if node.position.y < playableRect.minY - scenerySpacing {
                     node.position.y += wrapHeight
@@ -818,13 +858,12 @@ final class GameScene: SKScene {
         node.zPosition = 40
         node.userData = ["touched": false]
 
-        // Spawn anywhere across the full road width
-        let x = CGFloat.random(in: roadMinX ... roadMaxX)
-        if side == .left {
-            node.position = CGPoint(x: x, y: playableRect.maxY + 30)
-        } else {
-            node.position = CGPoint(x: x, y: playableRect.minY - 30)
-        }
+        // Spawn across the road width, centred on the bent road at the horizon
+        let spawnY: CGFloat = (side == .left) ? playableRect.maxY + 30 : playableRect.minY - 30
+        let spawnCX = isFullWidth ? roadCenterX(at: spawnY) : playableRect.midX
+        let halfW   = playableRect.width / 2 - carEdgePad
+        let x       = CGFloat.random(in: (spawnCX - halfW) ... (spawnCX + halfW))
+        node.position = CGPoint(x: x, y: spawnY)
 
         addChild(node)
         obstacles.append(node)
@@ -984,17 +1023,27 @@ final class GameScene: SKScene {
         // Center dashed line via PHASE (never flickers)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
 
-        // Road curve — sine-wave lateral shift of road content (full-width modes only)
+        // Road curve — proper per-Y polygon bend (full-width modes only)
         if isFullWidth {
-            let prevOffset = CGFloat(sin(curvePhase) * Double(curveAmplitude))
-            curvePhase  += dt * curveCycleSpeed
-            let newOffset  = CGFloat(sin(curvePhase) * Double(curveAmplitude))
-            curveDeltaX    = newOffset - prevOffset
+            prevCurveIntensity = curveIntensity
+            curvePhase    += dt * curveCycleSpeed
+            curveIntensity = CGFloat(sin(curvePhase))   // -1 … +1
 
-            // Shift every live obstacle with the road
-            for ob in obstacles { ob.position.x += curveDeltaX }
+            // Bend the road polygon and dashes
+            updateRoadPath()
+            layoutDashes()
 
-            layoutDashes(xOffset: newOffset)
+            // Shift each obstacle by how much the road centre moved at its Y position
+            for ob in obstacles {
+                let raw: CGFloat = (side == .left)
+                    ? (ob.position.y - playableRect.minY) / playableRect.height
+                    : (playableRect.maxY - ob.position.y) / playableRect.height
+                let t = max(0, min(1, raw))
+                let prevShift = prevCurveIntensity * maxRoadCurveShift * t * t
+                let newShift  = curveIntensity     * maxRoadCurveShift * t * t
+                ob.position.x += newShift - prevShift
+            }
+
             updateScenery(dy: dy)
         } else {
             layoutDashes()
