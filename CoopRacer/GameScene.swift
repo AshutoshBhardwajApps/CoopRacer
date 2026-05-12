@@ -22,14 +22,17 @@ final class GameScene: SKScene {
     // Layout mode: when true the road fills more of the screen (used in single-player)
     private let isFullWidth: Bool
 
+    // Endless survival mode: no finish line, continuous speed escalation, 3 lives
+    private let isEndlessMode: Bool
+
     // Difficulty (pulled from SettingsStore at init time)
     private let difficulty: SpeedLevel
 
     // Visual
     private var roadNode = SKShapeNode()
     private var carNode = SKNode()
-    private var startLine: SKShapeNode!
-    private var finishLine: SKShapeNode!
+    private var startLine: SKShapeNode?
+    private var finishLine: SKShapeNode?
 
     // Distance/progress bar
     private let progressBG = SKShapeNode()
@@ -90,13 +93,15 @@ final class GameScene: SKScene {
          input: PlayerInput,
          coordinator: GameCoordinator,
          carPNG: String,
-         isFullWidth: Bool = false)
+         isFullWidth: Bool = false,
+         isEndlessMode: Bool = false)
     {
         self.side = side
         self.input = input
         self.coordinator = coordinator
         self.chosenCarPNG = carPNG
         self.isFullWidth = isFullWidth
+        self.isEndlessMode = isEndlessMode
         // Use current selected speed level for this scene
         self.difficulty = SettingsStore.shared.selectedSpeedLevel
 
@@ -142,8 +147,10 @@ final class GameScene: SKScene {
         // Center dashed line (phase-driven, *never* flickers)
         buildDashes()
 
-        // Start / Finish (high z so always visible)
-        buildCheckeredLines()
+        // Start / Finish — only built in the fixed-race modes; endless has no finish line
+        if !isEndlessMode {
+            buildCheckeredLines()
+        }
 
         // Car (PNG or procedural; single placement path)
         let accent: SKColor = (side == .left) ? (Theme.p1SK ?? .red) : (Theme.p2SK ?? .blue)
@@ -171,32 +178,37 @@ final class GameScene: SKScene {
         carNode.zPosition = 100
         addChild(carNode)
 
-        // Place START just in front of the car (toward driving direction)
-        let behindOffset: CGFloat = 28
-        if side == .left {
-            // bottom player drives UP → checker sits BELOW the car
-            startLine.position = CGPoint(x: playableRect.midX,
-                                         y: carNode.position.y - behindOffset)
-        } else {
-            // top player drives DOWN → checker sits ABOVE the car
-            startLine.position = CGPoint(x: playableRect.midX,
-                                         y: carNode.position.y + behindOffset)
+        // Place START just in front of the car (toward driving direction) — only in fixed-race modes
+        if let sl = startLine {
+            let behindOffset: CGFloat = 28
+            if side == .left {
+                sl.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behindOffset)
+            } else {
+                sl.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behindOffset)
+            }
         }
 
-        // Distance bar
-        addProgressBar()
-        updateProgressFill(ratio: 0)
-
-        // Finish distance: clean 30s run hits finish exactly at t=0 (for a clean run)
-        let totalSeconds: CGFloat = 30
-        totalTrackDistance = baseSpeed * totalSeconds
         distanceAdvanced = 0
         hasSignalledFinish = false
 
-        if side == .left {
-            finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + totalTrackDistance)
+        if isEndlessMode {
+            // No finish line, no progress bar — distance is tracked live via coordinator
         } else {
-            finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
+            // Distance bar
+            addProgressBar()
+            updateProgressFill(ratio: 0)
+
+            // Finish distance: clean 30s run hits finish exactly at t=0 (for a clean run)
+            let totalSeconds: CGFloat = 30
+            totalTrackDistance = baseSpeed * totalSeconds
+
+            if let fl = finishLine {
+                if side == .left {
+                    fl.position = CGPoint(x: playableRect.midX, y: carNode.position.y + totalTrackDistance)
+                } else {
+                    fl.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
+                }
+            }
         }
 
         // NOTE: we DO NOT start engine here anymore.
@@ -383,13 +395,14 @@ final class GameScene: SKScene {
     }
 
     private func buildCheckeredLines() {
-        startLine = checkered(width: playableRect.width * 0.8, height: 18)
-        finishLine = checkered(width: playableRect.width * 0.8, height: 18)
-        // Put them under the car
-        startLine.zPosition = 60
-        finishLine.zPosition = 60
-        addChild(startLine)
-        addChild(finishLine)
+        let sl = checkered(width: playableRect.width * 0.8, height: 18)
+        let fl = checkered(width: playableRect.width * 0.8, height: 18)
+        sl.zPosition = 60
+        fl.zPosition = 60
+        addChild(sl)
+        addChild(fl)
+        startLine = sl
+        finishLine = fl
     }
 
     private func makePNGCar(textureName: String, tint: SKColor? = nil) -> SKSpriteNode {
@@ -467,43 +480,48 @@ final class GameScene: SKScene {
         carNode.position = CGPoint(x: playableRect.midX, y: initialCarY)
         carNode.zRotation = (side == .right) ? .pi : 0
 
-        // Progress bar back to 0
-        updateProgressFill(ratio: 0)
-
         // Dashes back to base placement
         layoutDashes()
 
-        // --- Start line: recreate if nil, otherwise ensure it's in the scene
-        let behind: CGFloat = 28
-
-        if startLine == nil {
-            startLine = checkered(width: playableRect.width * 0.8, height: 18)
-            startLine.zPosition = 60
-            addChild(startLine)
-        } else if startLine.parent == nil {
-            addChild(startLine)
-        }
-
-        if side == .left {
-            startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
+        if isEndlessMode {
+            // Endless mode: no finish line, no progress bar — just reset distance tracking
+            distanceAdvanced = 0
         } else {
-            startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behind)
-        }
+            // Progress bar back to 0
+            updateProgressFill(ratio: 0)
 
-        // --- Finish line: always recreate fresh
-        if finishLine != nil {
-            finishLine.removeFromParent()
-        }
-        finishLine = checkered(width: playableRect.width * 0.8, height: 18)
-        finishLine.zPosition = 60
-        addChild(finishLine)
+            // --- Start line: recreate if nil, otherwise ensure it's in the scene
+            let behind: CGFloat = 28
+            if startLine == nil {
+                let sl = checkered(width: playableRect.width * 0.8, height: 18)
+                sl.zPosition = 60
+                addChild(sl)
+                startLine = sl
+            } else if startLine?.parent == nil, let sl = startLine {
+                addChild(sl)
+            }
+            if let sl = startLine {
+                if side == .left {
+                    sl.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
+                } else {
+                    sl.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behind)
+                }
+            }
 
-        let totalSeconds: CGFloat = 30
-        totalTrackDistance = baseSpeed * totalSeconds
-        if side == .left {
-            finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + totalTrackDistance)
-        } else {
-            finishLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
+            // --- Finish line: always recreate fresh
+            finishLine?.removeFromParent()
+            let fl = checkered(width: playableRect.width * 0.8, height: 18)
+            fl.zPosition = 60
+            addChild(fl)
+            finishLine = fl
+
+            let totalSeconds: CGFloat = 30
+            totalTrackDistance = baseSpeed * totalSeconds
+            if side == .left {
+                fl.position = CGPoint(x: playableRect.midX, y: carNode.position.y + totalTrackDistance)
+            } else {
+                fl.position = CGPoint(x: playableRect.midX, y: carNode.position.y - totalTrackDistance)
+            }
         }
 
         // Make sure vignette is invisible at round start
@@ -698,15 +716,17 @@ final class GameScene: SKScene {
             }
 
             // Keep the start line BEHIND the car (car sits visually on top)
-            let behind: CGFloat = 28
-            if side == .left {
-                startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
-            } else {
-                startLine.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behind)
+            if let sl = startLine {
+                let behind: CGFloat = 28
+                if side == .left {
+                    sl.position = CGPoint(x: playableRect.midX, y: carNode.position.y - behind)
+                } else {
+                    sl.position = CGPoint(x: playableRect.midX, y: carNode.position.y + behind)
+                }
             }
 
-            // Make sure progress looks reset while waiting
-            updateProgressFill(ratio: 0)
+            // Make sure progress looks reset while waiting (fixed-race only)
+            if !isEndlessMode { updateProgressFill(ratio: 0) }
             return
         }
 
@@ -733,23 +753,32 @@ final class GameScene: SKScene {
         // Track elapsed race time for stage difficulty
         elapsedRaceTime += dt
 
-        // Stage 0/1/2 for [0–10), [10–20), [20–30] seconds
-        let stage = min(2, Int(elapsedRaceTime / 10.0))
-
-        // Per-stage multipliers (ramp every 10s)
+        // Per-stage multipliers — endless mode climbs forever; fixed race uses 3 stages
         var stageSpeedBoost: CGFloat = 1.0
         var stageSpawnScale: Double = 1.0
 
-        switch stage {
-        case 0:
-            stageSpeedBoost = 1.0
-            stageSpawnScale = 1.0
-        case 1:
-            stageSpeedBoost = 1.15   // a bit faster mid-race
-            stageSpawnScale = 0.85   // spawn slightly more often
-        default:
-            stageSpeedBoost = 1.30   // fastest in last 10s
-            stageSpawnScale = 0.70   // most obstacles
+        if isEndlessMode {
+            // Continuous escalation: +25% speed per 60 s (uncapped)
+            stageSpeedBoost = 1.0 + CGFloat(elapsedRaceTime / 60.0) * 0.25
+            // Spawn density ramps to a floor of 0.15x at ~90 s
+            stageSpawnScale = max(0.15, 1.0 - (elapsedRaceTime / 90.0) * 0.85)
+            // Report live distance to coordinator (100 pts ≈ 1 m)
+            let meters = Int(distanceAdvanced / 100)
+            coordinator?.updateEndlessDistance(meters)
+        } else {
+            // Stage 0/1/2 for [0–10), [10–20), [20–30] seconds
+            let stage = min(2, Int(elapsedRaceTime / 10.0))
+            switch stage {
+            case 0:
+                stageSpeedBoost = 1.0
+                stageSpawnScale = 1.0
+            case 1:
+                stageSpeedBoost = 1.15   // a bit faster mid-race
+                stageSpawnScale = 0.85   // spawn slightly more often
+            default:
+                stageSpeedBoost = 1.30   // fastest in last 10s
+                stageSpawnScale = 0.70   // most obstacles
+            }
         }
 
         // Extra multipliers from selected difficulty
@@ -776,41 +805,46 @@ final class GameScene: SKScene {
         let speed = baseSpeed * speedMultiplier * stageSpeedBoost * diffBoost
         let dy = worldDir * speed * CGFloat(dt)
 
-        // Distance + progress bar
+        // Distance tracking
         distanceAdvanced += abs(dy)
-        let ratio = min(distanceAdvanced / totalTrackDistance, 1.0)
-        updateProgressFill(ratio: ratio)
 
-        // ✅ Notify coordinator when this lane reaches the checker, and freeze this lane
-        if !hasSignalledFinish && ratio >= 1.0 {
-            hasSignalledFinish = true
+        if isEndlessMode {
+            // Endless: no finish line — distance is reported to coordinator each frame (above)
+        } else {
+            // Fixed race: update progress bar and check for finish
+            let ratio = min(distanceAdvanced / totalTrackDistance, 1.0)
+            updateProgressFill(ratio: ratio)
 
-            if side == .left {
-                coordinator?.markFinished(player: 1)
-            } else {
-                coordinator?.markFinished(player: 2)
+            if !hasSignalledFinish && ratio >= 1.0 {
+                hasSignalledFinish = true
+
+                if side == .left {
+                    coordinator?.markFinished(player: 1)
+                } else {
+                    coordinator?.markFinished(player: 2)
+                }
+
+                stopEngineLoop()
+                engineStarted = false
+                return
             }
-
-            // Stop engine sound for this lane once finished
-            stopEngineLoop()
-            engineStarted = false
-            // Keep car sitting at the finish line; no more scrolling for this lane
-            return
         }
 
         // Center dashed line via PHASE (never flickers)
         dashPhase = (dashPhase + abs(dy)).truncatingRemainder(dividingBy: dashSpacing)
         layoutDashes()
 
-        // Move checkered lines with the world
-        startLine.position.y += dy
-        finishLine.position.y += dy
+        // Move checkered lines with the world (start line exists in all modes; finish only in fixed race)
+        if let sl = startLine { sl.position.y += dy }
+        finishLine?.position.y += dy
 
         // Remove start line once it scrolls past player's edge
-        if side == .left, startLine.parent != nil, startLine.position.y < playableRect.minY - 40 {
-            startLine.removeFromParent()
-        } else if side == .right, startLine.parent != nil, startLine.position.y > playableRect.maxY + 40 {
-            startLine.removeFromParent()
+        if let sl = startLine {
+            if side == .left, sl.parent != nil, sl.position.y < playableRect.minY - 40 {
+                sl.removeFromParent()
+            } else if side == .right, sl.parent != nil, sl.position.y > playableRect.maxY + 40 {
+                sl.removeFromParent()
+            }
         }
 
         // Spawn & move obstacles + scoring clean passes
@@ -840,8 +874,13 @@ final class GameScene: SKScene {
                         .fadeAlpha(to: 1.0, duration: 0.15)
                     ])
                     carNode.run(flash)
-                    applySmoothPenalty()
                     playCrash()
+                    if isEndlessMode {
+                        applyBriefCrashFeedback()
+                        coordinator?.playerLostLife()
+                    } else {
+                        applySmoothPenalty()
+                    }
                 }
             }
 
@@ -888,6 +927,21 @@ final class GameScene: SKScene {
         }
         // Clamp across the full road width
         carNode.position.x = max(roadMinX, min(roadMaxX, carNode.position.x + moveX * CGFloat(dt)))
+    }
+
+    // MARK: - Endless mode: brief crash flash (no speed change, just visual drama)
+    private func applyBriefCrashFeedback() {
+        // Red vignette flash
+        slowVignette?.removeAllActions()
+        slowVignette?.run(.sequence([
+            .fadeAlpha(to: 0.55, duration: 0.06),
+            .fadeAlpha(to: 0.0,  duration: 0.40)
+        ]))
+        // Duck engine briefly
+        engineNode?.run(.sequence([
+            .changeVolume(to: 0.08, duration: 0.06),
+            .changeVolume(to: 0.45, duration: 0.35)
+        ]))
     }
 
     // MARK: - Penalty easing (3s, strong)

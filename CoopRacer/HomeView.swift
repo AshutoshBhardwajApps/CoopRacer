@@ -51,10 +51,28 @@ struct HomeView: View {
                     // Buttons stack
                     VStack(spacing: 14) {
                         NavigationLink {
+                            ContentView(isSinglePlayer: true, isEndlessMode: true)
+                                .navigationBarBackButtonHidden(true)
+                        } label: {
+                            MenuButtonLabel(
+                                title: "ENDLESS",
+                                accent: LinearGradient(
+                                    colors: [Color(red: 0.9, green: 0.5, blue: 0.05),
+                                             Color(red: 0.7, green: 0.2, blue: 0.05)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                subtitle: settings.endlessBestDistance > 0
+                                    ? "Best: \(settings.endlessBestDistance)m"
+                                    : "Survive as long as you can"
+                            )
+                        }
+
+                        NavigationLink {
                             ContentView(isSinglePlayer: true)
                                 .navigationBarBackButtonHidden(true)
                         } label: {
-                            MenuButtonLabel(title: "SINGLE PLAYER")
+                            MenuButtonLabel(title: "SOLO RACE")
                         }
 
                         NavigationLink {
@@ -121,17 +139,26 @@ private struct MenuButtonLabel: View {
         colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)],
         startPoint: .top, endPoint: .bottom
     )
+    var subtitle: String? = nil
 
     var body: some View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
             .fill(accent)
-            .frame(height: 56)
+            .frame(height: subtitle != nil ? 64 : 56)
             .overlay(
-                Text(title)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                VStack(spacing: 2) {
+                    Text(title)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    if let sub = subtitle {
+                        Text(sub)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.70))
+                            .lineLimit(1)
+                    }
+                }
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16)

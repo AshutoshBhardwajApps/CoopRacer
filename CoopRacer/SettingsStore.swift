@@ -77,6 +77,9 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var p2WinsTotal: Int
     @Published private(set) var speedLevelsUnlocked: Bool
 
+    // MARK: - Endless Mode
+    @Published private(set) var endlessBestDistance: Int
+
     var remainingRoundsToUnlock: Int {
         max(0, 10 - totalRoundsPlayed)
     }
@@ -109,6 +112,7 @@ final class SettingsStore: ObservableObject {
         p1WinsTotal         = d.integer(forKey: "settings.p1WinsTotal")
         p2WinsTotal         = d.integer(forKey: "settings.p2WinsTotal")
         speedLevelsUnlocked = d.bool(forKey: "settings.speedUnlocked")
+        endlessBestDistance = d.integer(forKey: "endless.bestDistance")
 
         hasRemovedAds = d.bool(forKey: "settings.removeAdsPurchased")
 
@@ -130,6 +134,15 @@ final class SettingsStore: ObservableObject {
         }
 
         saveProgress()
+    }
+
+    /// Returns true if this distance beats the current personal best.
+    @discardableResult
+    func updateEndlessBest(_ distance: Int) -> Bool {
+        guard distance > endlessBestDistance else { return false }
+        endlessBestDistance = distance
+        UserDefaults.standard.set(distance, forKey: "endless.bestDistance")
+        return true
     }
 
     func markRemoveAdsPurchased() {

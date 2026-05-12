@@ -7,6 +7,9 @@ final class GameCoordinator: ObservableObject {
     /// Single-player mode: only P1 races; round ends when P1 reaches the finish line.
     @Published var isSinglePlayer: Bool = false
 
+    /// Endless survival mode: no finish line; speed climbs forever; 3 lives; score = distance.
+    @Published var isEndlessMode: Bool = false
+
     // MARK: - Published Round State
     @Published var isPaused: Bool = false
     @Published var raceStarted: Bool = false
@@ -28,6 +31,11 @@ final class GameCoordinator: ObservableObject {
     // Final Results
     @Published var showResults: Bool = false
     @Published var winner: Int? = nil          // 1 = P1, 2 = P2, 0 = tie (only if simultaneous)
+
+    // MARK: - Endless Mode State
+    @Published var endlessDistance: Int = 0    // live meters, pushed from GameScene each frame
+    @Published var endlessLives: Int = 3
+    @Published var isNewPersonalBest: Bool = false
 
     // Timer used ONLY for countdown, NOT race duration
     private var timer: AnyCancellable?
@@ -54,6 +62,10 @@ final class GameCoordinator: ObservableObject {
 
         raceStarted = false
         roundActive  = false
+
+        endlessDistance = 0
+        endlessLives = 3
+        isNewPersonalBest = false
 
         timer?.cancel()
 
@@ -139,6 +151,33 @@ final class GameCoordinator: ObservableObject {
         if player1 { p1Score += points } else { p2Score += points }
     }
 
+
+    // MARK: - Endless Mode API
+
+    /// Called by GameScene every frame to keep the live distance counter in sync.
+    func updateEndlessDistance(_ meters: Int) {
+        endlessDistance = meters
+    }
+
+    /// Called by GameScene on each collision during endless mode. Drains one life;
+    /// when lives hit zero the round ends and the results sheet is shown.
+    func playerLostLife() {
+        guard isEndlessMode, roundActive else { return }
+        endlessLives = max(0, endlessLives - 1)
+        if endlessLives == 0 {
+            endRoundEndless()
+        }
+    }
+
+    private func endRoundEndless() {
+        roundActive  = false
+        raceStarted  = false
+        isNewPersonalBest = SettingsStore.shared.updateEndlessBest(endlessDistance)
+        SettingsStore.shared.registerRoundResult(winner: 1)   // counts as a completed run
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.showResults = true
+        }
+    }
 
     // MARK: - Manual Stop (if needed)
     func endRound() {

@@ -7,6 +7,9 @@ struct ContentView: View {
     /// When true, only P1's lane is shown full-screen and the round ends when P1 finishes.
     var isSinglePlayer: Bool = false
 
+    /// When true, single-player runs in endless survival mode (no finish line, 3 lives, score = distance).
+    var isEndlessMode: Bool = false
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var settings: SettingsStore
@@ -85,6 +88,11 @@ struct ContentView: View {
 
             PauseButtons(showTopButton: !isSinglePlayer) { showPause = true }
                 .padding(.horizontal, 20)
+
+            if isEndlessMode {
+                EndlessHUD(coordinator: coordinator)
+                    .allowsHitTesting(false)
+            }
         }
         // Player 1 controls (bottom)
         .safeAreaInset(edge: .bottom) {
@@ -119,7 +127,7 @@ struct ContentView: View {
                 }
             }
         }) {
-            ResultsSheet(coordinator: coordinator, isSinglePlayer: isSinglePlayer) {
+            ResultsSheet(coordinator: coordinator, isSinglePlayer: isSinglePlayer, isEndlessMode: isEndlessMode) {
                 // --- PLAY AGAIN ---
                 pulse = false
                 winnerPulse = false
@@ -249,7 +257,8 @@ struct ContentView: View {
             .ignoresSafeArea()
             .onAppear {
                 // Tell the coordinator which mode we're in BEFORE the round starts
-                coordinator.isSinglePlayer = isSinglePlayer
+                coordinator.isSinglePlayer = isSinglePlayer || isEndlessMode
+                coordinator.isEndlessMode  = isEndlessMode
 
                 lastGeoSize = geo.size
                 if leftScene == nil || (!isSinglePlayer && rightScene == nil) {
@@ -321,14 +330,15 @@ struct ContentView: View {
     private func createScenes(for size: CGSize) {
         lastGeoSize = size
 
-        if isSinglePlayer {
-            // Solo: one full-screen lane (P1 only) with a wider road
+        if isSinglePlayer || isEndlessMode {
+            // Solo / Endless: one full-screen lane (P1 only) with a wider road
             leftScene  = GameScene(size: size,
                                    side: .left,
                                    input: input,
                                    coordinator: coordinator,
                                    carPNG: settings.player1Car,
-                                   isFullWidth: true)
+                                   isFullWidth: true,
+                                   isEndlessMode: isEndlessMode)
             rightScene = nil
         } else {
             let half = CGSize(width: size.width / 2, height: size.height)
@@ -512,16 +522,35 @@ private struct PlayerControlsMirrored: View {
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
     var isSinglePlayer: Bool = false
+    var isEndlessMode: Bool = false
     @EnvironmentObject var settings: SettingsStore
     var playAgain: () -> Void
     var goHome: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
-            Text(isSinglePlayer ? "Run Complete" : "Round Over")
+            Text(isEndlessMode ? "CRASHED" : isSinglePlayer ? "Run Complete" : "Round Over")
                 .font(.largeTitle).bold()
 
-            if isSinglePlayer {
+            if isEndlessMode {
+                // Endless mode: show distance + personal best
+                VStack(spacing: 8) {
+                    Text("\(coordinator.endlessDistance)m")
+                        .font(.system(size: 72, weight: .black, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+
+                    if coordinator.isNewPersonalBest {
+                        Text("🏆 New Personal Best!")
+                            .font(.headline.bold())
+                            .foregroundStyle(.yellow)
+                    } else {
+                        Text("Best: \(SettingsStore.shared.endlessBestDistance)m")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 32)
+            } else if isSinglePlayer {
                 VStack(spacing: 6) {
                     Text(settings.player1Name)
                         .foregroundStyle(Theme.p1)
@@ -565,6 +594,38 @@ private struct ResultsSheet: View {
         }
         .padding(24)
         .presentationDetents([.medium])
+    }
+}
+
+// MARK: - Endless HUD (lives + live distance)
+
+private struct EndlessHUD: View {
+    @ObservedObject var coordinator: GameCoordinator
+
+    var body: some View {
+        VStack {
+            HStack(alignment: .center) {
+                // Lives (hearts) — only show during active play or after crash
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Image(systemName: i < coordinator.endlessLives ? "heart.fill" : "heart")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(i < coordinator.endlessLives ? Color.red : Color.white.opacity(0.35))
+                    }
+                }
+
+                Spacer()
+
+                // Live distance counter
+                Text("\(coordinator.endlessDistance)m")
+                    .font(.system(size: 22, weight: .black, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.8), radius: 3, y: 1)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            Spacer()
+        }
     }
 }
 
