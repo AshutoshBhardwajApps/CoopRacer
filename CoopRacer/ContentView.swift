@@ -154,8 +154,16 @@ struct ContentView: View {
                     didTryAdAfterResults = false
                 }
 
-                // Skip the 2-player leaderboard entry in solo mode
-                if !isSinglePlayer {
+                if isEndlessMode {
+                    // Save endless run to leaderboard (only runs > 0 m)
+                    if coordinator.endlessDistance > 0 {
+                        HighScoresStore.shared.addEndless(
+                            playerName: SettingsStore.shared.player1Name,
+                            distance: coordinator.endlessDistance
+                        )
+                    }
+                } else if !isSinglePlayer {
+                    // Save two-player round to leaderboard
                     HighScoresStore.shared.add(
                         p1Name: SettingsStore.shared.player1Name,
                         p2Name: SettingsStore.shared.player2Name,
