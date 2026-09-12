@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		E1A5E7E92E791E5C007C7E37 /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = E1A5E7E82E791E5C007C7E37 /* GoogleMobileAds */; };
+		50C826858151506F70334C33 /* MetaAdapterTarget in Frameworks */ = {isa = PBXBuildFile; productRef = 7C8D11210747EFA3A71CF1AE /* MetaAdapterTarget */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -70,6 +71,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1A5E7E92E791E5C007C7E37 /* GoogleMobileAds in Frameworks */,
+				50C826858151506F70334C33 /* MetaAdapterTarget in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +133,7 @@
 			name = CoopRacer;
 			packageProductDependencies = (
 				E1A5E7E82E791E5C007C7E37 /* GoogleMobileAds */,
+				7C8D11210747EFA3A71CF1AE /* MetaAdapterTarget */,
 			);
 			productName = CoopRacer;
 			productReference = E1CB6F622E7518BD00B9186C /* CoopRacer.app */;
@@ -216,6 +219,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E1A5E7E72E791E5C007C7E37 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
+				1E3F9691378217C38B219915 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-meta" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E1CB6F632E7518BD00B9186C /* Products */;
@@ -602,6 +606,14 @@
 				minimumVersion = 13.4.0;
 			};
 		};
+		1E3F9691378217C38B219915 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-meta" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/googleads-mobile-ios-mediation-meta.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.21.101;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -609,6 +621,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E1A5E7E72E791E5C007C7E37 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
 			productName = GoogleMobileAds;
+		};
+		7C8D11210747EFA3A71CF1AE /* MetaAdapterTarget */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E3F9691378217C38B219915 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-meta" */;
+			productName = MetaAdapterTarget;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
