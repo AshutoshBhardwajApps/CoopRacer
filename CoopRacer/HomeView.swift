@@ -1,8 +1,12 @@
 import SwiftUI
 
 struct HomeView: View {
+    @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var purchaseManager: PurchaseManager
+
     @State private var animateCars = false
     @State private var showComingSoon = false
+    @State private var showRemoveAdsSheet = false
 
     var body: some View {
         NavigationStack {
@@ -72,6 +76,49 @@ struct HomeView: View {
                     }
                     .padding(.horizontal, 28)
 
+                    // Settings + lifetime record + Remove Ads, as on CoopHockey's home screen
+                    VStack(spacing: 10) {
+                        NavigationLink(destination: SettingsView()) {
+                            VStack(spacing: 6) {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.title2)
+                                Text("Settings")
+                                    .font(.caption)
+                            }
+                            .foregroundColor(.white.opacity(0.75))
+                        }
+
+                        if settings.totalRoundsPlayed > 0 {
+                            Text("Rounds: \(settings.totalRoundsPlayed)  •  P1 \(settings.p1WinsTotal)  –  P2 \(settings.p2WinsTotal)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Remove Ads pill — visible only until purchased.
+                        if !settings.hasRemovedAds {
+                            Button {
+                                showRemoveAdsSheet = true
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "nosign")
+                                    Text("Remove Ads")
+                                    if let price = purchaseManager.localizedPrice {
+                                        Text("· \(price)")
+                                            .foregroundColor(.white.opacity(0.6))
+                                    }
+                                }
+                                .font(.footnote.weight(.semibold))
+                                .foregroundColor(.cyan)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule().stroke(Color.cyan.opacity(0.55), lineWidth: 1)
+                                )
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+
                     Spacer()
 
                     // Big bottom "Event" button
@@ -108,6 +155,11 @@ struct HomeView: View {
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 animateCars = true
             }
+        }
+        .fullScreenCover(isPresented: $showRemoveAdsSheet) {
+            RemoveAdsPromoView(onDismiss: { showRemoveAdsSheet = false })
+                .environmentObject(settings)
+                .environmentObject(purchaseManager)
         }
         .alert("Coming soon", isPresented: $showComingSoon) {
             Button("OK", role: .cancel) { }

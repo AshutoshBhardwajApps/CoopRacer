@@ -19,6 +19,7 @@ final class CountdownSounder {
     }
 
     private func play(name: String, ext: String, trim: TimeInterval? = nil, tail: TimeInterval? = nil) {
+        guard SettingsStore.shared.effectsEnabled else { return }
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
             print("⚠️ Missing sound: \(name).\(ext)")
             return

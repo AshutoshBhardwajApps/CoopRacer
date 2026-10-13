@@ -6,6 +6,8 @@ import SpriteKit
 struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var purchaseManager: PurchaseManager
 
     @StateObject private var input = PlayerInput()
     @StateObject private var coordinator = GameCoordinator()
@@ -24,7 +26,7 @@ struct ContentView: View {
     @State private var lastGeoSize: CGSize = .zero
 
     // Ad coordination
-    @State private var didTryAdAfterResults = false
+    @State private var showRemoveAdsPromo = false
 
     var body: some View {
         GeometryReader { geo in
@@ -41,7 +43,7 @@ struct ContentView: View {
         }
 
         .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
-            if !coordinator.showResults && !showPause { resumeAll() }
+            if !coordinator.roundEnded && !showPause { resumeAll() }
             BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // <- restore
             AdManager.shared.preload()
         }
@@ -49,7 +51,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("CoopRacer.ResetNavFlag"))) { _ in
             showPause = false
             confirmHome = false
-            didTryAdAfterResults = false
         }
     }
 
@@ -72,38 +73,43 @@ struct ContentView: View {
         }
         // Player 1 controls (bottom)
         .safeAreaInset(edge: .bottom) {
-            PlayerControls(title: "PLAYER 1",
+            PlayerControls(title: settings.player1Name,
                            color: Theme.p1,
                            left: $input.p1Left,
                            right: $input.p1Right)
         }
         // Player 2 controls (top, mirrored)
         .safeAreaInset(edge: .top) {
-            PlayerControlsMirrored(title: "PLAYER 2",
+            PlayerControlsMirrored(title: settings.player2Name,
                                    color: Theme.p2,
                                    left: $input.p2Left,
                                    right: $input.p2Right)
         }
+        // Round over: ad or Remove Ads promo first, then the results sheet
+        .onChange(of: coordinator.roundEnded) { ended in
+            if ended { handleRoundEnded() }
+        }
         // Results sheet
-        .sheet(isPresented: $coordinator.showResults, onDismiss: {
-            // Attempt interstitial only once after the sheet is fully gone
-            if !didTryAdAfterResults {
-                didTryAdAfterResults = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                    AdManager.shared.presentIfAllowed()
-                }
-            }
-        }) {
-            ResultsSheet(coordinator: coordinator) {
+        .sheet(isPresented: $coordinator.showResults) {
+            ResultsSheet(coordinator: coordinator,
+                         p1Name: settings.player1Name,
+                         p2Name: settings.player2Name) {
                 pulse = false
                 winnerPulse = false
                 resetRound(playTick3: true, recreateScenes: true)
             }
-            .onAppear {
-                AdManager.shared.noteRoundCompleted()
-                AdManager.shared.preload()
-                didTryAdAfterResults = false
-            }
+        }
+        .fullScreenCover(isPresented: $showRemoveAdsPromo) {
+            RemoveAdsPromoView(onDismiss: {
+                showRemoveAdsPromo = false
+                // Same 0.4s as the ad-dismiss path: the cover must finish
+                // animating out or the results sheet can fail to present.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    coordinator.showResults = true
+                }
+            })
+            .environmentObject(settings)
+            .environmentObject(purchaseManager)
         }
         // Pause sheet
         .sheet(isPresented: $showPause) {
@@ -132,12 +138,14 @@ struct ContentView: View {
         .onChange(of: coordinator.startTick) { tick in
             if tick == 3 || tick == 2 || tick == 1 {
                 sounder.playTick(blipLength: 0.18)
+                Haptics.shared.countdownTick()
             }
         }
         .onChange(of: coordinator.raceStarted) { started in
             if started {
                 // (Box-car GameScene has no engine hooks; we just do the GO tail.)
                 sounder.playGoTail(tail: 0.5)
+                Haptics.shared.success()
             } else {
                 sounder.stop()
             }
@@ -146,7 +154,7 @@ struct ContentView: View {
         .onChange(of: showPause) { presented in
             if presented {
                 pauseAll(); BGM.shared.setVolume(0.12, fadeDuration: 0.25)
-            } else if !coordinator.showResults {
+            } else if !coordinator.roundEnded {
                 resumeAll(); BGM.shared.setVolume(0.20, fadeDuration: 0.25)
             }
         }
@@ -155,7 +163,7 @@ struct ContentView: View {
                 pauseAll()
                 BGM.shared.setVolume(0.12, fadeDuration: 0.25)
                 showPause = true
-            } else if !showPause && !coordinator.showResults {
+            } else if !showPause && !coordinator.roundEnded {
                 resumeAll()
                 BGM.shared.setVolume(0.20, fadeDuration: 0.25)
             }
@@ -184,6 +192,41 @@ struct ContentView: View {
                 guard dx > 20 || dy > 20 else { return }
                 createScenes(for: newSize)
             }
+    }
+
+    // MARK: - Round end
+
+    /// Mirrors CoopHockey's game-over flow: count the round, then either the
+    /// Remove Ads promo or an interstitial, and only after that the results
+    /// sheet. Showing the ad *after* the sheet (the old order) meant it landed
+    /// on top of the next round's countdown.
+    private func handleRoundEnded() {
+        settings.registerResult(winner: coordinator.winner)
+        Haptics.shared.success()
+        AdManager.shared.noteRoundCompleted()
+
+        if AdManager.shared.shouldShowPromoInsteadOfAd() {
+            AdManager.shared.notePromoShown()
+            showRemoveAdsPromo = true
+            return
+        }
+        AdManager.shared.presentIfAllowed { shown in
+            guard shown else {
+                coordinator.showResults = true
+                return
+            }
+            var token: NSObjectProtocol?
+            token = NotificationCenter.default.addObserver(
+                forName: .adDidDismiss, object: nil, queue: .main
+            ) { _ in
+                if let t = token { NotificationCenter.default.removeObserver(t) }
+                // .adDidDismiss fires before the ad VC is fully torn down;
+                // presenting the sheet immediately can leave a blank screen.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    coordinator.showResults = true
+                }
+            }
+        }
     }
 
     // MARK: - Pause/Resume
@@ -378,6 +421,8 @@ private struct PlayerControlsMirrored: View {
 
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
+    var p1Name: String
+    var p2Name: String
     var playAgain: () -> Void
 
     var body: some View {
@@ -385,12 +430,12 @@ private struct ResultsSheet: View {
             Text("Round Over").font(.largeTitle).bold()
             HStack {
                 VStack {
-                    Text("Player 1").foregroundStyle(Theme.p1).bold()
+                    Text(p1Name).foregroundStyle(Theme.p1).bold()
                     Text("\(coordinator.p1Score)").font(.title)
                 }
                 Spacer()
                 VStack {
-                    Text("Player 2").foregroundStyle(Theme.p2).bold()
+                    Text(p2Name).foregroundStyle(Theme.p2).bold()
                     Text("\(coordinator.p2Score)").font(.title)
                 }
             }

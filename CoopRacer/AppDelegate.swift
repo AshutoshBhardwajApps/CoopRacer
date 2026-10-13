@@ -1,28 +1,121 @@
 import UIKit
 import GoogleMobileAds
 import AVFAudio
+import AppTrackingTransparency
+import FBAudienceNetwork
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    func application(_ application: UIApplication,
-                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool {
 
-        // 1) Audio session up front (respect silent switch; mix if you want)
+    /// One-shot guard so we only request ATT once per launch even if
+    /// didBecomeActive fires multiple times (e.g. user toggled Control
+    /// Center, returned to app, etc.).
+    private var attRequested = false
+    private var didBecomeActiveObserver: NSObjectProtocol?
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
-            // If you want app to sound even when the ringer switch is silent, use:
-            // try session.setCategory(.playback, mode: .default, options: [])
-            try session.setPreferredIOBufferDuration(0.005) // small buffer helps reduce pops
+            try session.setPreferredIOBufferDuration(0.005)
             try session.setActive(true, options: [])
         } catch {
-            print("Audio session init error: \(error)")
+            print("Audio session error: \(error)")
         }
 
-        // 2) (your existing lines)
-        let ads = MobileAds.shared
-        ads.start()
-        AdManager.shared.preload()
+        // Register test devices so real ad-unit IDs serve TEST ads on these devices.
+        // Find your device's hashed ID in the Xcode console after the first ad request:
+        //   "To get test ads on this device, set: Mobile Ads SDK ... testDeviceIdentifiers = @[ @"ABC123..." ]"
+        // Paste that hash into the array below. Safe to ship with real device IDs in production —
+        // it only affects the listed devices.
+        // This hash is derived from the device's advertising identifier, so it
+        // changes if that identifier is reset — at which point the device
+        // silently starts serving REAL ads to you. Re-read it from the console
+        // ("To get test ads on this device, set: ...") whenever that happens.
+        MobileAds.shared.requestConfiguration.testDeviceIdentifiers = [
+            "c18f2644337b99f078c7f88f6136a82f", // Ashutosh's iPhone (re-read 2026-10-05)
+        ]
+
+        // Meta Audience Network (mediation bidding) needs its Advertiser
+        // Tracking Enabled flag set before the Google Mobile Ads SDK
+        // initializes its adapters. On first launch ATT is .notDetermined so
+        // this starts false; requestATTIfNeeded() updates it once the user
+        // answers the prompt (subsequent launches pick up the stored status).
+        if #available(iOS 14, *) {
+            FBAdSettings.setAdvertiserTrackingEnabled(
+                ATTrackingManager.trackingAuthorizationStatus == .authorized
+            )
+        }
+
+        MobileAds.shared.start()
+
+        // ATT must be requested when the app is in the .active state. Calling
+        // it from didFinishLaunching is too early — iOS silently no-ops the
+        // request and the dialog never shows (App Store review rejected
+        // CoopHockey 1.3(14) for exactly this). Defer to didBecomeActive
+        // and add a small delay so the launch transition completes before the
+        // system alert tries to present.
+        didBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.requestATTIfNeeded()
+        }
 
         return true
+    }
+
+    private func requestATTIfNeeded() {
+        guard !attRequested else { return }
+        attRequested = true
+
+        // Stop listening — one-shot.
+        if let token = didBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(token)
+            didBecomeActiveObserver = nil
+        }
+
+        // 0.4s delay lets the launch transition finish; without it the alert
+        // can race with the first frame and either be dropped or appear
+        // before the app's UI is visible (which Apple also dislikes).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            // UMP consent runs BEFORE ATT. In the EEA/UK/Switzerland a
+            // Google-certified CMP has to gather GDPR consent or those users
+            // can only ever be served non-personalised ads. Everywhere else
+            // UMP reports "no form required" and this falls straight through.
+            //
+            // Ads are only preloaded once both prompts have been answered, so
+            // the first request carries the right consent and ATT signals.
+            ConsentManager.shared.gather(from: Self.keyWindowRoot()) { [weak self] in
+                self?.requestATTThenPreloadAds()
+            }
+        }
+    }
+
+    private func requestATTThenPreloadAds() {
+        if #available(iOS 14, *) {
+            ATTrackingManager.requestTrackingAuthorization { status in
+                FBAdSettings.setAdvertiserTrackingEnabled(status == .authorized)
+                Task { @MainActor in
+                    AdManager.shared.preload()
+                }
+            }
+        } else {
+            Task { @MainActor in AdManager.shared.preload() }
+        }
+    }
+
+    /// Root controller of the active scene's key window — where the UMP
+    /// consent form presents from. Nothing is covering the UI this early in
+    /// launch, so the plain root is the right anchor here.
+    private static func keyWindowRoot() -> UIViewController? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .first?
+            .windows.first(where: { $0.isKeyWindow })?
+            .rootViewController
     }
 }
