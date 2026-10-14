@@ -9,6 +9,9 @@ final class BGM {
 
     /// Start/continue the background track. If the player already exists, just set volume.
     func play(volume: Float = 0.20) {
+        // Single gate for every caller (home, game, ad dismiss) rather than
+        // checking the setting at each call site.
+        guard SettingsStore.shared.musicEnabled else { stop(); return }
         if player == nil {
             guard let url = Bundle.main.url(forResource: "COOPbackground", withExtension: "mp3") else {
                 print("BGM: missing COOPbackground.mp3")

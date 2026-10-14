@@ -574,6 +574,7 @@ final class GameScene: SKScene {
 
     // MARK: - Sounds
     private func startEngineLoop() {
+        guard SettingsStore.shared.effectsEnabled else { return }
         let name = (side == .left) ? "engine_loop_p1" : "engine_loop_p2"
         if Bundle.main.url(forResource: name, withExtension: "mp3") != nil {
             let engine = SKAudioNode(fileNamed: "\(name).mp3")
@@ -593,6 +594,8 @@ final class GameScene: SKScene {
     }
 
     private func playCrash() {
+        Haptics.shared.crash()
+        guard SettingsStore.shared.effectsEnabled else { return }
         if Bundle.main.url(forResource: "crash", withExtension: "wav") != nil {
             run(.playSoundFileNamed("crash.wav", waitForCompletion: false))
         } else if Bundle.main.url(forResource: "crash", withExtension: "mp3") != nil {

@@ -19,6 +19,10 @@ final class GameCoordinator: ObservableObject {
     @Published var p2Score: Int = 0
 
     // Results
+    /// Flips true once the round is over and the winner flash has played.
+    /// ContentView answers it with the ad / Remove Ads promo flow, and only
+    /// then raises `showResults` (same order as CoopHockey: ad, then sheet).
+    @Published var roundEnded: Bool = false
     @Published var showResults: Bool = false
     @Published var winner: Int? = nil               // 1 = P1, 2 = P2, 0 = tie
 
@@ -38,6 +42,7 @@ final class GameCoordinator: ObservableObject {
         lastStartTick = 4
 
         showResults = false
+        roundEnded = false
         winner = nil
 
         timer?.cancel()
@@ -82,7 +87,7 @@ final class GameCoordinator: ObservableObject {
                     self.timer?.cancel()
                     // Give UI time to flash winner, then show results
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                        if !self.roundActive && self.raceStarted { self.showResults = true }
+                        if !self.roundActive && self.raceStarted { self.roundEnded = true }
                     }
                 }
             }
@@ -96,7 +101,7 @@ final class GameCoordinator: ObservableObject {
         else if p2Score > p1Score { winner = 2 }
         else { winner = 0 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            self?.showResults = true
+            self?.roundEnded = true
         }
     }
 
