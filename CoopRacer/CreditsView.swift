@@ -23,6 +23,7 @@ struct CreditsView: View {
                 LabeledContent("Ads",      value: "Google Mobile Ads SDK")
                 LabeledContent("Payments", value: "StoreKit")
                 LabeledContent("Game",     value: "SpriteKit")
+                LabeledContent("Leaderboards", value: "Game Center")
             }
         }
         .navigationTitle("Credits")

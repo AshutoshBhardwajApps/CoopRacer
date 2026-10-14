@@ -13,7 +13,8 @@ Where the two disagree, this file wins for this app.
 - **Singletons via `@StateObject` in the App struct, injected via
   `@EnvironmentObject`** (`SettingsStore`, `PurchaseManager`).
 - **Flat file layout.** `AdManager`, `AdPresenter`, `ConsentManager`,
-  `PurchaseManager`, `SettingsStore` and `Haptics` are the infrastructure files.
+  `GameCenterManager`, `PurchaseManager`, `SettingsStore` and `Haptics` are the
+  infrastructure files.
 - **No `Constants.swift`.** Ad unit IDs live in `AdManager`, the IAP product ID
   in `SettingsStore`, the same as CoopHockey.
 - **UserDefaults keys are prefixed `cr.`.** Keep the prefix on anything new.
@@ -63,6 +64,18 @@ To test the consent form, set `ConsentManager.forceEEAForTesting = true`
 - `SettingsStore.markRemoveAdsPurchased()` sets `hasRemovedAds`, which stops
   interstitials and promos and hides the home-screen pill.
 
+## Game Center (`GameCenterManager`)
+
+- Leaderboards only, the same scope as CoopHockey. There are two boards:
+  `coopracer.leaderboard.totalwins` (Player 1's running round-win total,
+  kept in `cr.gc.totalWins` because Game Center can't increment) and
+  `coopracer.leaderboard.bestroundscore` (best single-round score). The IDs
+  must match App Store Connect letter-for-letter, or submissions fail silently.
+- Player 1, at the bottom of the phone, counts as the local player.
+- `authenticate()` runs from the App struct's `.task`. Everything no-ops when
+  the player isn't signed in. `CoopRacer.entitlements` carries
+  `com.apple.developer.game-center`.
+
 ## Sound + haptics
 
 - `effectsEnabled` gates the countdown, engine loop and crash sounds, as well as `Haptics`.
@@ -92,8 +105,7 @@ content is `google.com, pub-2320635595451132, DIRECT, f08c47fec0942fa0`.
 
 - **Single player** (a CPU opponent, the equivalent of CoopHockey's
   difficulties and NEMESIS) still shows "Coming soon".
-- **Game Center leaderboards** and **rewarded ads** both need a design
-  decision about what to rank and what to earn.
+- **Rewarded ads** need a design decision about what to earn.
 
 ## Style
 

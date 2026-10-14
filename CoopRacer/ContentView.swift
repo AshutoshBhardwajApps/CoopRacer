@@ -202,6 +202,8 @@ struct ContentView: View {
     /// on top of the next round's countdown.
     private func handleRoundEnded() {
         settings.registerResult(winner: coordinator.winner)
+        GameCenterManager.shared.recordRoundFinished(p1Score: coordinator.p1Score,
+                                                     p1Won: coordinator.winner == 1)
         Haptics.shared.success()
         AdManager.shared.noteRoundCompleted()
 
