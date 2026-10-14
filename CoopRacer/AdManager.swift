@@ -17,9 +17,8 @@ final class AdManager: NSObject, ObservableObject {
     #if DEBUG
     private let interstitialID = "ca-app-pub-3940256099942544/4411468910"
     #else
-    // TODO: paste the real CoopRacer interstitial unit from the AdMob console.
-    // Until then `adUnitIsPlaceholder` stops every Release request (and says so).
-    private let interstitialID = "ca-app-pub-2320635595451132/XXXXXXXXXX"
+    // CoopRacer_Interstitial_Main in the AdMob console.
+    private let interstitialID = "ca-app-pub-2320635595451132/3705247221"
     #endif
 
     /// Same pacing as CoopHockey: an interstitial may follow every completed
