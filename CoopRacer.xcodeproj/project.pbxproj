@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		E1A5E7E92E791E5C007C7E37 /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = E1A5E7E82E791E5C007C7E37 /* GoogleMobileAds */; };
 		50C826858151506F70334C33 /* MetaAdapterTarget in Frameworks */ = {isa = PBXBuildFile; productRef = 7C8D11210747EFA3A71CF1AE /* MetaAdapterTarget */; };
+		A292BD1029A1C3CC800EE8F1 /* LiftoffMonetizeAdapterTarget in Frameworks */ = {isa = PBXBuildFile; productRef = CDE42744C812C283464DA3C4 /* LiftoffMonetizeAdapterTarget */; };
+		338352BA6E83F67DD138EE59 /* PangleAdapterTarget in Frameworks */ = {isa = PBXBuildFile; productRef = 23BFFD03CE7D54AA010E7EE8 /* PangleAdapterTarget */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +74,8 @@
 			files = (
 				E1A5E7E92E791E5C007C7E37 /* GoogleMobileAds in Frameworks */,
 				50C826858151506F70334C33 /* MetaAdapterTarget in Frameworks */,
+				A292BD1029A1C3CC800EE8F1 /* LiftoffMonetizeAdapterTarget in Frameworks */,
+				338352BA6E83F67DD138EE59 /* PangleAdapterTarget in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -134,6 +138,8 @@
 			packageProductDependencies = (
 				E1A5E7E82E791E5C007C7E37 /* GoogleMobileAds */,
 				7C8D11210747EFA3A71CF1AE /* MetaAdapterTarget */,
+				CDE42744C812C283464DA3C4 /* LiftoffMonetizeAdapterTarget */,
+				23BFFD03CE7D54AA010E7EE8 /* PangleAdapterTarget */,
 			);
 			productName = CoopRacer;
 			productReference = E1CB6F622E7518BD00B9186C /* CoopRacer.app */;
@@ -220,6 +226,8 @@
 			packageReferences = (
 				E1A5E7E72E791E5C007C7E37 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
 				1E3F9691378217C38B219915 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-meta" */,
+				0EE81769C10846491E656906 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-liftoffmonetize" */,
+				C2DF2F762DE5F418286DF4C1 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-pangle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E1CB6F632E7518BD00B9186C /* Products */;
@@ -603,7 +611,7 @@
 			repositoryURL = "https://github.com/googleads/swift-package-manager-google-mobile-ads.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 13.4.0;
+				minimumVersion = 13.6.0;
 			};
 		};
 		1E3F9691378217C38B219915 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-meta" */ = {
@@ -612,6 +620,22 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 6.21.101;
+			};
+		};
+		0EE81769C10846491E656906 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-liftoffmonetize" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/googleads-mobile-ios-mediation-liftoffmonetize.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.7.400;
+			};
+		};
+		C2DF2F762DE5F418286DF4C1 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-pangle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/googleads-mobile-ios-mediation-pangle.git";
+			requirement = {
+				kind = exactVersion;
+				version = 8.1.10100;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -626,6 +650,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1E3F9691378217C38B219915 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-meta" */;
 			productName = MetaAdapterTarget;
+		};
+		CDE42744C812C283464DA3C4 /* LiftoffMonetizeAdapterTarget */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0EE81769C10846491E656906 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-liftoffmonetize" */;
+			productName = LiftoffMonetizeAdapterTarget;
+		};
+		23BFFD03CE7D54AA010E7EE8 /* PangleAdapterTarget */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C2DF2F762DE5F418286DF4C1 /* XCRemoteSwiftPackageReference "googleads-mobile-ios-mediation-pangle" */;
+			productName = PangleAdapterTarget;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

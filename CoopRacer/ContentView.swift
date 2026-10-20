@@ -36,6 +36,7 @@ struct ContentView: View {
 
     // Ad coordination
     @State private var didTryAdAfterResults = false
+    @State private var showRemoveAdsPromo = false
 
     // Convenience
     private var adsDisabled: Bool {
@@ -121,8 +122,20 @@ struct ContentView: View {
             // Present the ad after the sheet has fully gone (if ads enabled)
             if !adsDisabled && !didTryAdAfterResults {
                 didTryAdAfterResults = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                    AdManager.shared.presentIfAllowed()
+                // Every so often the Remove Ads promo takes the ad's slot
+                // (same cadence as CoopHockey). Not on the way home, where
+                // the cover would be torn down with this view.
+                if !goHomeAfterResults && AdManager.shared.shouldShowPromoInsteadOfAd() {
+                    AdManager.shared.notePromoShown()
+                    // After Play Again's resetRound (0.12s), so the pause
+                    // isn't undone by startRound().
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showRemoveAdsPromo = true
+                    }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        AdManager.shared.presentIfAllowed()
+                    }
                 }
             }
             // If user chose "Go Home", navigate home shortly after triggering the ad
@@ -160,6 +173,18 @@ struct ContentView: View {
                     didTryAdAfterResults = false
                 }
 
+                // Game Center: P1 wins (two-player, or 1st against bots) and
+                // the best Endless distance.
+                if isEndlessMode {
+                    GameCenterManager.shared.recordEndlessDistance(coordinator.endlessDistance)
+                } else if isSinglePlayer {
+                    if botCount > 0 && coordinator.playerFinishPosition == 1 {
+                        GameCenterManager.shared.recordWin()
+                    }
+                } else if coordinator.winner == 1 {
+                    GameCenterManager.shared.recordWin()
+                }
+
                 if isEndlessMode {
                     // Save endless run to leaderboard (only runs > 0 m)
                     if coordinator.endlessDistance > 0 {
@@ -178,6 +203,15 @@ struct ContentView: View {
                     )
                 }
             }
+        }
+        .fullScreenCover(isPresented: $showRemoveAdsPromo) {
+            RemoveAdsPromoView(onDismiss: { showRemoveAdsPromo = false })
+                .environmentObject(settings)
+                .environmentObject(PurchaseManager.shared)
+        }
+        .onChange(of: showRemoveAdsPromo) { shown in
+            // Hold the next round's countdown while the promo is up.
+            if shown { pauseAll() } else if !showPause && !coordinator.showResults { resumeAll() }
         }
         // Pause sheet
         .sheet(isPresented: $showPause) {

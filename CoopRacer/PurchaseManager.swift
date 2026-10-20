@@ -16,6 +16,9 @@ final class PurchaseManager: ObservableObject {
     private let removeAdsProductID = "coopracer.removeads"
 
     @Published var removeAdsProduct: Product?
+
+    /// Store-formatted price for the Remove Ads promo, nil until loaded.
+    var localizedPrice: String? { removeAdsProduct?.displayPrice }
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
 
