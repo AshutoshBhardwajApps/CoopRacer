@@ -99,37 +99,72 @@ final class AdManager: NSObject, ObservableObject {
     /// `completion(true)` only if an ad actually presented, so the caller can
     /// advance its flow either way (and wait for `.adDidDismiss` if it did).
     func presentIfAllowed(completion: ((Bool) -> Void)? = nil) {
+        presentIfAllowed(giveUpAt: Date().addingTimeInterval(Self.presentRetryWindow),
+                         completion: completion)
+    }
+
+    /// How long to keep retrying while the app is backgrounded or the anchor
+    /// is covered. Without a bound, a player who leaves the results screen
+    /// for the home menu would leave a retry ticking every 250ms forever.
+    private static let presentRetryWindow: TimeInterval = 4
+
+    private func presentIfAllowed(giveUpAt deadline: Date,
+                                  completion: ((Bool) -> Void)?) {
         guard !adsDisabled else { completion?(false); return }
-        guard UIApplication.shared.applicationState == .active else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.presentIfAllowed(completion: completion)
+        let retry = { [weak self] in
+            guard Date() < deadline else {
+                print("[AdManager] gave up presenting — anchor stayed unavailable")
+                completion?(false)
+                return
             }
-            return
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                self?.presentIfAllowed(giveUpAt: deadline, completion: completion)
+            }
         }
+        guard UIApplication.shared.applicationState == .active else { retry(); return }
         guard roundsSinceLastAd >= minRoundsBetweenAds else { completion?(false); return }
         if let last = lastShown, Date().timeIntervalSince(last) < minGapSeconds {
             completion?(false); return
         }
-        guard let rootVC = Self.presenterVC() else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.presentIfAllowed(completion: completion)
-            }
-            return
-        }
-        guard rootVC.presentedViewController == nil else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.presentIfAllowed(completion: completion)
-            }
-            return
-        }
+        guard let rootVC = Self.presenterVC() else { retry(); return }
+        // Was `rootVC.presentedViewController == nil`, which never fired.
+        // rootVC is AdPresenter's anchor — a CHILD view controller inside the
+        // SwiftUI tree — and a child has no presentedViewController of its
+        // own even while the results sheet covers it. So the guard passed,
+        // UIKit then refused the presentation because an ANCESTOR was
+        // presenting, and the refusal was silent: 100% fill, zero
+        // impressions, every round since launch.
+        guard !Self.anchorIsCovered(rootVC) else { retry(); return }
         guard let ad = interstitial else { preload(); completion?(false); return }
 
+        // Clear state only once the ad has actually been recorded. Doing it
+        // immediately after present() meant a refused presentation still
+        // consumed the ad and reset the pacing counters, so the next round
+        // started from scratch with nothing loaded.
         ad.present(from: rootVC)
-        lastShown = Date()
-        roundsSinceLastAd = 0
-        interstitial = nil
-        preload()
         completion?(true)
+    }
+
+    /// Is something presented over the anchor's own hierarchy?
+    ///
+    /// Walks the window's presentation chain and asks whether each presented
+    /// controller belongs to the anchor's ancestry. A sheet shown as a
+    /// sibling — the results screen, or one still animating away — does not,
+    /// and presenting from beneath it is silently refused by UIKit.
+    private static func anchorIsCovered(_ anchor: UIViewController) -> Bool {
+        guard let root = anchor.view.window?.rootViewController else { return false }
+        var ancestry = Set<ObjectIdentifier>()
+        var node: UIViewController? = anchor
+        while let n = node {
+            ancestry.insert(ObjectIdentifier(n))
+            node = n.parent
+        }
+        var presented = root.presentedViewController
+        while let p = presented {
+            if !ancestry.contains(ObjectIdentifier(p)) { return true }
+            presented = p.presentedViewController
+        }
+        return false
     }
 
     // MARK: - Presenter helpers
@@ -171,6 +206,12 @@ final class AdManager: NSObject, ObservableObject {
 
 extension AdManager: FullScreenContentDelegate {
     func adWillPresentFullScreenContent(_ ad: any FullScreenPresentingAd) {
+        // It is really going on screen — now the ad is spent and the pacing
+        // counters should restart.
+        lastShown = Date()
+        roundsSinceLastAd = 0
+        interstitial = nil
+        preload()
         NotificationCenter.default.post(name: .adWillPresent, object: nil)
     }
 
@@ -183,6 +224,8 @@ extension AdManager: FullScreenContentDelegate {
         // Loud on purpose. A present failure looks identical to a no-fill in
         // the AdMob report except for match rate.
         print("[AdManager] ❌ present failed: \(error.localizedDescription)")
+        // Keep the ad and the counters: nothing was shown, so the next round
+        // should get this same ad rather than starting over with none.
         NotificationCenter.default.post(name: .adDidDismiss, object: nil)
     }
 

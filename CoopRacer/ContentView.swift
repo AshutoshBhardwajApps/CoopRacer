@@ -133,7 +133,11 @@ struct ContentView: View {
                         showRemoveAdsPromo = true
                     }
                 } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    // 0.45s, not 0.08s. The results sheet is still animating
+                    // away at 80ms, so UIKit refuses to present over it — and
+                    // refuses silently. CoopHockey needed 0.4s for the same
+                    // reason in the opposite direction.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                         AdManager.shared.presentIfAllowed()
                     }
                 }
