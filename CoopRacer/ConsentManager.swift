@@ -1,0 +1,128 @@
+import Foundation
+import UIKit
+import UserMessagingPlatform
+
+/// Wraps Google's User Messaging Platform — the Google-certified CMP that
+/// gathers GDPR/TCF consent for users in the EEA, the UK and Switzerland.
+///
+/// Ported from CoopHockey. Without it EEA players can only ever be served
+/// non-personalised ads (capping eCPM there) and Ad Inspector shows blank
+/// consent signals.
+///
+/// Outside those regions UMP answers "no form required" and the whole thing
+/// falls through in a single network round trip, so most players pay almost
+/// nothing for this.
+///
+/// Deliberately *not* `@MainActor`: `AppDelegate` isn't either, and UMP
+/// already delivers its callbacks on the main thread.
+final class ConsentManager {
+
+    static let shared = ConsentManager()
+    private init() {}
+
+    #if DEBUG
+    /// Flip to true to make UMP behave as though the device is in the EEA, so
+    /// the consent form actually appears during development. Left off by
+    /// default — otherwise the form interrupts every single debug launch.
+    ///
+    /// Pair it with `reset()` from the Settings DEBUG section; UMP remembers
+    /// the answer and won't re-present the form until consent is cleared.
+    static let forceEEAForTesting = false
+    #endif
+
+    /// UMP's own verdict on whether ads may be requested at all. True outside
+    /// the EEA, and true inside it once the form has been answered.
+    var canRequestAds: Bool { ConsentInformation.shared.canRequestAds }
+
+    /// How long to wait for UMP before letting the rest of launch proceed.
+    /// Ad preloading sits downstream of this, and a consent call that hangs
+    /// would otherwise mean the app never loads an ad at all — a silent
+    /// failure, since `presentIfAllowed` does nothing when none is ready.
+    private static let timeout: TimeInterval = 5
+
+    /// Refreshes consent state and presents the form only if UMP says one is
+    /// required.
+    ///
+    /// `completion` runs exactly once, on the main thread, whether consent
+    /// succeeded, failed, or simply took too long. A consent problem must
+    /// never leave the app without ads — Google's guidance is to fall back to
+    /// non-personalised serving, which the SDK does on its own when consent
+    /// is absent.
+    ///
+    /// If the timeout wins, UMP keeps running: a form that arrives late still
+    /// presents, and consent still applies to every request after it lands.
+    /// Only the *waiting* is abandoned, not the consent itself.
+    func gather(from viewController: UIViewController?,
+                completion: @escaping () -> Void) {
+
+        var finished = false
+        let finishOnce: () -> Void = {
+            assert(Thread.isMainThread)
+            guard !finished else { return }
+            finished = true
+            completion()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout) {
+            if !finished { print("[Consent] timed out after \(Int(Self.timeout))s — proceeding") }
+            finishOnce()
+        }
+
+        let parameters = RequestParameters()
+        parameters.isTaggedForUnderAgeOfConsent = false
+
+        #if DEBUG
+        if Self.forceEEAForTesting {
+            let debug = DebugSettings()
+            debug.geography = .EEA
+            // UMP uses its OWN device identifier — a UUID — not the hashed one
+            // AdMob prints for test ads. Mixing them up means the geography
+            // override is silently ignored. Read it from the console line
+            // "<UMP SDK> To enable debug mode for this device, set: ...".
+            debug.testDeviceIdentifiers = ["DCA8B4B6-7817-425D-8BC0-79254C7EA9E6"]
+            parameters.debugSettings = debug
+        }
+        #endif
+
+        ConsentInformation.shared.requestConsentInfoUpdate(with: parameters) { [weak self] error in
+            if let error {
+                print("[Consent] info update failed: \(error.localizedDescription)")
+                Self.onMain(finishOnce)
+                return
+            }
+
+            guard let viewController else {
+                print("[Consent] no presenter available; skipping form")
+                Self.onMain(finishOnce)
+                return
+            }
+
+            ConsentForm.loadAndPresentIfRequired(from: viewController) { formError in
+                if let formError {
+                    print("[Consent] form failed: \(formError.localizedDescription)")
+                }
+                print("[Consent] canRequestAds=\(self?.canRequestAds ?? false)")
+                Self.onMain(finishOnce)
+            }
+        }
+    }
+
+    /// UMP documents its callbacks as main-thread, but `finishOnce` mutates
+    /// shared state and must not race the timeout, so this hops explicitly
+    /// rather than trusting that.
+    private static func onMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread {
+            block()
+        } else {
+            DispatchQueue.main.async(execute: block)
+        }
+    }
+
+    #if DEBUG
+    /// Clears stored consent so the form presents again on the next launch.
+    func reset() {
+        ConsentInformation.shared.reset()
+        print("[Consent] reset — form will show again next launch")
+    }
+    #endif
+}

@@ -9,10 +9,11 @@ struct HoldPad: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
-                .background(RoundedRectangle(cornerRadius: 14).fill(.primary.opacity(0.05)))
+                .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.10)))
             Text(title)
                 .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
                 .rotationEffect(.degrees(flipText ? 180 : 0))
         }
         .contentShape(Rectangle())

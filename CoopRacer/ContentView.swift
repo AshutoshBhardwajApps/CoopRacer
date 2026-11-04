@@ -4,8 +4,18 @@ import SpriteKit
 // MARK: - ContentView
 
 struct ContentView: View {
+    /// When true, only P1's lane is shown full-screen and the round ends when P1 finishes.
+    var isSinglePlayer: Bool = false
+
+    /// When true, single-player runs in endless survival mode (no finish line, 3 lives, score = distance).
+    var isEndlessMode: Bool = false
+
+    var botCount: Int = 0
+    var botDifficulty: BotDifficulty = .easy
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject var settings: SettingsStore
 
     @StateObject private var input = PlayerInput()
     @StateObject private var coordinator = GameCoordinator()
@@ -13,6 +23,7 @@ struct ContentView: View {
     private let sounder = CountdownSounder()
 
     // UI state
+    @State private var goHomeAfterResults = false
     @State private var pulse = false
     @State private var winnerPulse = false
     @State private var showPause = false
@@ -25,6 +36,12 @@ struct ContentView: View {
 
     // Ad coordination
     @State private var didTryAdAfterResults = false
+    @State private var showRemoveAdsPromo = false
+
+    // Convenience
+    private var adsDisabled: Bool {
+        settings.hasRemovedAds
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -34,17 +51,23 @@ struct ContentView: View {
         .navigationBarBackButtonHidden(true)
 
         // Keep BGM + game state in sync with interstitials
-       
         .onReceive(NotificationCenter.default.publisher(for: .adWillPresent)) { _ in
             pauseAll()
-            BGM.shared.setVolume(0.0, fadeDuration: 0.15)   // <- hard mute
+            BGM.shared.setVolume(0.0, fadeDuration: 0.15)   // hard mute
         }
 
         .onReceive(NotificationCenter.default.publisher(for: .adDidDismiss)) { _ in
-            if !coordinator.showResults && !showPause { resumeAll() }
-            BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // <- restore
-            AdManager.shared.preload()
+            if !coordinator.showResults && !showPause {
+                resumeAll()
+            }
+            BGM.shared.setVolume(0.20, fadeDuration: 0.20)  // restore
+
+            // Only preload next ad if ads are enabled
+            if !adsDisabled {
+                AdManager.shared.preload()
+            }
         }
+
         // Clear any lingering flags when HomeView appears
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("CoopRacer.ResetNavFlag"))) { _ in
             showPause = false
@@ -67,43 +90,132 @@ struct ContentView: View {
             WinnerLayer(coordinator: coordinator, winnerPulse: $winnerPulse)
                 .allowsHitTesting(false)
 
-            PauseButtons { showPause = true }
+            PauseButtons(showTopButton: !isSinglePlayer) { showPause = true }
                 .padding(.horizontal, 20)
+
+            if isEndlessMode {
+                EndlessHUD(coordinator: coordinator)
+                    .allowsHitTesting(false)
+            }
         }
         // Player 1 controls (bottom)
         .safeAreaInset(edge: .bottom) {
-            PlayerControls(title: "PLAYER 1",
+            PlayerControls(title: settings.player1Name.uppercased(),
                            color: Theme.p1,
                            left: $input.p1Left,
-                           right: $input.p1Right)
+                           right: $input.p1Right,
+                           boost: $input.p1Boost,
+                           showBoost: isSinglePlayer && !isEndlessMode && botCount > 0,
+                           boostCharge: coordinator.boostCharge)
         }
-        // Player 2 controls (top, mirrored)
+        // Player 2 controls (top, mirrored) — hidden in single-player
         .safeAreaInset(edge: .top) {
-            PlayerControlsMirrored(title: "PLAYER 2",
-                                   color: Theme.p2,
-                                   left: $input.p2Left,
-                                   right: $input.p2Right)
+            if !isSinglePlayer {
+                PlayerControlsMirrored(title: settings.player2Name.uppercased(),
+                                       color: Theme.p2,
+                                       left: $input.p2Left,
+                                       right: $input.p2Right)
+            }
         }
         // Results sheet
         .sheet(isPresented: $coordinator.showResults, onDismiss: {
-            // Attempt interstitial only once after the sheet is fully gone
-            if !didTryAdAfterResults {
+            // Present the ad after the sheet has fully gone (if ads enabled)
+            if !adsDisabled && !didTryAdAfterResults {
                 didTryAdAfterResults = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                    AdManager.shared.presentIfAllowed()
+                // Every so often the Remove Ads promo takes the ad's slot
+                // (same cadence as CoopHockey). Not on the way home, where
+                // the cover would be torn down with this view.
+                if !goHomeAfterResults && AdManager.shared.shouldShowPromoInsteadOfAd() {
+                    AdManager.shared.notePromoShown()
+                    // After Play Again's resetRound (0.12s), so the pause
+                    // isn't undone by startRound().
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showRemoveAdsPromo = true
+                    }
+                } else {
+                    // 0.45s, not 0.08s. The results sheet is still animating
+                    // away at 80ms, so UIKit refuses to present over it — and
+                    // refuses silently. CoopHockey needed 0.4s for the same
+                    // reason in the opposite direction.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        AdManager.shared.presentIfAllowed()
+                    }
+                }
+            }
+            // If user chose "Go Home", navigate home shortly after triggering the ad
+            if goHomeAfterResults {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+                    goHomeAfterResults = false
+                    dismiss() // pop back to HomeView
                 }
             }
         }) {
-            ResultsSheet(coordinator: coordinator) {
+            ResultsSheet(coordinator: coordinator, isSinglePlayer: isSinglePlayer, isEndlessMode: isEndlessMode, botCount: botCount, botDifficulty: botDifficulty) {
+                // --- PLAY AGAIN ---
                 pulse = false
                 winnerPulse = false
-                resetRound(playTick3: true, recreateScenes: true)
+
+                // Dismiss the sheet first
+                coordinator.showResults = false
+
+                // Let onDismiss trigger the ad, then reset the round
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    resetRound(playTick3: true, recreateScenes: false)
+                }
+
+            } goHome: {
+                // --- GO HOME ---
+                goHomeAfterResults = true
+                coordinator.showResults = false   // close sheet; onDismiss will handle ad and navigation
             }
+            .environmentObject(settings) // <- make sure names are available
             .onAppear {
-                AdManager.shared.noteRoundCompleted()
-                AdManager.shared.preload()
-                didTryAdAfterResults = false
+                // Only track ads if enabled
+                if !adsDisabled {
+                    AdManager.shared.noteRoundCompleted()
+                    AdManager.shared.preload()
+                    didTryAdAfterResults = false
+                }
+
+                // Game Center: P1 wins (two-player, or 1st against bots) and
+                // the best Endless distance.
+                if isEndlessMode {
+                    GameCenterManager.shared.recordEndlessDistance(coordinator.endlessDistance)
+                } else if isSinglePlayer {
+                    if botCount > 0 && coordinator.playerFinishPosition == 1 {
+                        GameCenterManager.shared.recordWin()
+                    }
+                } else if coordinator.winner == 1 {
+                    GameCenterManager.shared.recordWin()
+                }
+
+                if isEndlessMode {
+                    // Save endless run to leaderboard (only runs > 0 m)
+                    if coordinator.endlessDistance > 0 {
+                        HighScoresStore.shared.addEndless(
+                            playerName: SettingsStore.shared.player1Name,
+                            distance: coordinator.endlessDistance
+                        )
+                    }
+                } else if !isSinglePlayer {
+                    // Save two-player round to leaderboard
+                    HighScoresStore.shared.add(
+                        p1Name: SettingsStore.shared.player1Name,
+                        p2Name: SettingsStore.shared.player2Name,
+                        p1Score: coordinator.p1Score,
+                        p2Score: coordinator.p2Score
+                    )
+                }
             }
+        }
+        .fullScreenCover(isPresented: $showRemoveAdsPromo) {
+            RemoveAdsPromoView(onDismiss: { showRemoveAdsPromo = false })
+                .environmentObject(settings)
+                .environmentObject(PurchaseManager.shared)
+        }
+        .onChange(of: showRemoveAdsPromo) { shown in
+            // Hold the next round's countdown while the promo is up.
+            if shown { pauseAll() } else if !showPause && !coordinator.showResults { resumeAll() }
         }
         // Pause sheet
         .sheet(isPresented: $showPause) {
@@ -111,7 +223,8 @@ struct ContentView: View {
                 resume: { showPause = false },
                 restart: {
                     showPause = false
-                    resetRound(playTick3: true, recreateScenes: true)
+                    // 🔁 Restart should be a *fresh* round
+                    resetRound(playTick3: true, recreateScenes: false)
                 },
                 goHome: { confirmHome = true }
             )
@@ -130,14 +243,35 @@ struct ContentView: View {
         }
         // Countdown sounds
         .onChange(of: coordinator.startTick) { tick in
+            // Any time a new countdown starts (tick hits 3), hard-mute BGM
+            if tick == 3 {
+                BGM.shared.setVolume(0.0, fadeDuration: 0.10)
+            }
+
             if tick == 3 || tick == 2 || tick == 1 {
-                sounder.playTick(blipLength: 0.18)
+                if settings.effectsEnabled {
+                    sounder.playTick(blipLength: 0.18)
+                }
             }
         }
         .onChange(of: coordinator.raceStarted) { started in
             if started {
-                // (Box-car GameScene has no engine hooks; we just do the GO tail.)
-                sounder.playGoTail(tail: 0.5)
+                // GO tail (only if effects are enabled)
+                if settings.effectsEnabled {
+                    sounder.playGoTail(tail: 0.5)
+                }
+
+                // Bring in BGM only if music is enabled
+                if settings.musicEnabled {
+                    // Ensure player exists and starts at zero
+                    BGM.shared.play(volume: 0.0)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        // Gentle fade into gameplay volume
+                        BGM.shared.setVolume(0.20, fadeDuration: 0.8)
+                    }
+                } else {
+                    BGM.shared.stop()
+                }
             } else {
                 sounder.stop()
             }
@@ -145,9 +279,11 @@ struct ContentView: View {
         // Pause/resume tied to sheet & lifecycle
         .onChange(of: showPause) { presented in
             if presented {
-                pauseAll(); BGM.shared.setVolume(0.12, fadeDuration: 0.25)
+                pauseAll()
+                BGM.shared.setVolume(0.12, fadeDuration: 0.25)
             } else if !coordinator.showResults {
-                resumeAll(); BGM.shared.setVolume(0.20, fadeDuration: 0.25)
+                resumeAll()
+                BGM.shared.setVolume(0.20, fadeDuration: 0.25)
             }
         }
         .onChange(of: scenePhase) { phase in
@@ -166,16 +302,28 @@ struct ContentView: View {
 
     @ViewBuilder
     private func GameArea(geo: GeometryProxy) -> some View {
-        GameBoard(leftScene: leftScene, rightScene: rightScene)
+        GameBoard(leftScene: leftScene,
+                  rightScene: rightScene,
+                  isSinglePlayer: isSinglePlayer)
             .background(Color.black)
             .ignoresSafeArea()
             .onAppear {
+                // Tell the coordinator which mode we're in BEFORE the round starts
+                coordinator.isSinglePlayer = isSinglePlayer || isEndlessMode
+                coordinator.isEndlessMode  = isEndlessMode
+
                 lastGeoSize = geo.size
-                if leftScene == nil || rightScene == nil {
+                if leftScene == nil || (!isSinglePlayer && rightScene == nil) {
                     createScenes(for: geo.size)
                 }
                 resetRound(playTick3: true, recreateScenes: false)
-                BGM.shared.play(volume: 0.20)
+
+                // Start / stop BGM based on toggle, but at zero volume (countdown owns soundstage)
+                if settings.musicEnabled {
+                    BGM.shared.play(volume: 0.0)
+                } else {
+                    BGM.shared.stop()
+                }
             }
             .onChange(of: geo.size) { newSize in
                 // Rebuild scenes only on meaningful size changes
@@ -203,22 +351,63 @@ struct ContentView: View {
     // MARK: - Reset & Scenes
 
     private func resetRound(playTick3: Bool, recreateScenes: Bool) {
-        resumeAll()
+        // Make sure any old countdown tail stops
+        sounder.stop()
+
+        // Fresh state in coordinator
         coordinator.startRound()
+
+        // Scenes
         if recreateScenes {
             let size = (lastGeoSize == .zero) ? UIScreen.main.bounds.size : lastGeoSize
             createScenes(for: size)
         }
-        if playTick3 {
-            sounder.playTick(blipLength: 0.18)
+
+        // Resume scene updates so countdown can run
+        resumeAll()
+
+        // Defer one tick so SpriteView attaches and didMove(to:) runs
+        DispatchQueue.main.async {
+            self.leftScene?.prepareForNewRound()
+            self.rightScene?.prepareForNewRound()
         }
+
+        // Ensure BGM is muted during countdown for *every* reset
+        BGM.shared.setVolume(0.0, fadeDuration: 0.0)
+
+        // We no longer manually play a "3" tick here;
+        // countdown SFX are driven entirely by startTick changes.
     }
 
     private func createScenes(for size: CGSize) {
         lastGeoSize = size
-        let half = CGSize(width: size.width / 2, height: size.height)
-        leftScene  = GameScene(size: half, side: .left,  input: input, coordinator: coordinator)
-        rightScene = GameScene(size: half, side: .right, input: input, coordinator: coordinator)
+
+        if isSinglePlayer || isEndlessMode {
+            // Solo / Endless: one full-screen lane (P1 only) with a wider road
+            leftScene  = GameScene(size: size,
+                                   side: .left,
+                                   input: input,
+                                   coordinator: coordinator,
+                                   carPNG: settings.player1Car,
+                                   isFullWidth: true,
+                                   isEndlessMode: isEndlessMode,
+                                   botCount: botCount,
+                                   botDifficulty: botDifficulty)
+            rightScene = nil
+        } else {
+            let half = CGSize(width: size.width / 2, height: size.height)
+            leftScene  = GameScene(size: half,
+                                   side: .left,
+                                   input: input,
+                                   coordinator: coordinator,
+                                   carPNG: settings.player1Car)
+
+            rightScene = GameScene(size: half,
+                                   side: .right,
+                                   input: input,
+                                   coordinator: coordinator,
+                                   carPNG: settings.player2Car)
+        }
     }
 }
 
@@ -227,10 +416,15 @@ struct ContentView: View {
 private struct GameBoard: View {
     let leftScene: SKScene?
     let rightScene: SKScene?
+    var isSinglePlayer: Bool = false
     var body: some View {
-        HStack(spacing: 0) {
+        if isSinglePlayer {
             SpriteView(scene: leftScene ?? SKScene())
-            SpriteView(scene: rightScene ?? SKScene())
+        } else {
+            HStack(spacing: 0) {
+                SpriteView(scene: leftScene ?? SKScene())
+                SpriteView(scene: rightScene ?? SKScene())
+            }
         }
     }
 }
@@ -304,11 +498,14 @@ private struct WinnerLayer: View {
 }
 
 private struct PauseButtons: View {
+    var showTopButton: Bool = true
     let tap: () -> Void
     var body: some View {
         VStack {
-            Button(action: tap) { PauseChip(label: "Pause").rotationEffect(.degrees(180)) }
-                .padding(.top, 6)
+            if showTopButton {
+                Button(action: tap) { PauseChip(label: "Pause").rotationEffect(.degrees(180)) }
+                    .padding(.top, 6)
+            }
             Spacer()
             Button(action: tap) { PauseChip(label: "Pause") }
                 .padding(.bottom, 6)
@@ -339,18 +536,78 @@ private struct PlayerControls: View {
     var color: Color
     @Binding var left: Bool
     @Binding var right: Bool
+    @Binding var boost: Bool
+    var showBoost: Bool = false
+    var boostCharge: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 6) {
             Text(title).font(.caption).bold().foregroundColor(color)
-            HStack(spacing: 12) {
-                HoldPad(isPressed: $left,  title: "Left")
-                HoldPad(isPressed: $right, title: "Right")
+            HStack(spacing: 10) {
+                HoldPad(isPressed: $left, title: "◀")
+                if showBoost {
+                    BoostPad(isPressed: $boost, charge: boostCharge)
+                        .frame(width: 68)
+                }
+                HoldPad(isPressed: $right, title: "▶")
             }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 6)
         .background(Color.black)
+    }
+}
+
+private struct BoostPad: View {
+    @Binding var isPressed: Bool
+    var charge: CGFloat   // 0–100
+
+    private var chargeColor: Color {
+        charge > 60 ? .yellow : charge > 20 ? .orange : Color(white: 0.45)
+    }
+    private var canBoost: Bool { charge > 0 }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            // Thin charge bar above button
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.10))
+                    Capsule()
+                        .fill(chargeColor)
+                        .frame(width: geo.size.width * min(1, charge / 100))
+                        .animation(.linear(duration: 0.1), value: charge)
+                }
+            }
+            .frame(height: 4)
+
+            // Button
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(chargeColor.opacity(isPressed && canBoost ? 0.9 : 0.35),
+                                  lineWidth: 1.5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(chargeColor.opacity(isPressed && canBoost ? 0.22 : 0.06))
+                    )
+                VStack(spacing: 1) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 18, weight: .black))
+                        .foregroundStyle(chargeColor)
+                    Text("BOOST")
+                        .font(.system(size: 8, weight: .black))
+                        .foregroundStyle(chargeColor.opacity(0.85))
+                        .tracking(1)
+                }
+            }
+            .frame(height: 50)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in if !isPressed && canBoost { isPressed = true } }
+                    .onEnded   { _ in isPressed = false }
+            )
+        }
     }
 }
 
@@ -378,30 +635,160 @@ private struct PlayerControlsMirrored: View {
 
 private struct ResultsSheet: View {
     @ObservedObject var coordinator: GameCoordinator
+    var isSinglePlayer: Bool = false
+    var isEndlessMode: Bool = false
+    var botCount: Int = 0
+    var botDifficulty: BotDifficulty = .easy
+    @EnvironmentObject var settings: SettingsStore
     var playAgain: () -> Void
+    var goHome: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
-            Text("Round Over").font(.largeTitle).bold()
-            HStack {
-                VStack {
-                    Text("Player 1").foregroundStyle(Theme.p1).bold()
-                    Text("\(coordinator.p1Score)").font(.title)
-                }
-                Spacer()
-                VStack {
-                    Text("Player 2").foregroundStyle(Theme.p2).bold()
-                    Text("\(coordinator.p2Score)").font(.title)
-                }
-            }
-            .padding(.horizontal, 32)
+            Text(isEndlessMode ? "CRASHED" : isSinglePlayer ? "Run Complete" : "Round Over")
+                .font(.largeTitle).bold()
 
-            Button("Play Again", action: playAgain)
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 12)
+            if isEndlessMode {
+                // Endless mode: show distance + personal best
+                VStack(spacing: 8) {
+                    Text("\(coordinator.endlessDistance)m")
+                        .font(.system(size: 72, weight: .black, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+
+                    if coordinator.isNewPersonalBest {
+                        Text("🏆 New Personal Best!")
+                            .font(.headline.bold())
+                            .foregroundStyle(.yellow)
+                    } else {
+                        Text("Best: \(SettingsStore.shared.endlessBestDistance)m")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 32)
+            } else if isSinglePlayer {
+                if botCount > 0 {
+                    // Bot race: show finish position
+                    let pos = coordinator.playerFinishPosition
+                    VStack(spacing: 10) {
+                        Text(positionEmoji(pos))
+                            .font(.system(size: 64))
+                        Text(ordinalLabel(pos) + " Place")
+                            .font(.system(size: 40, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("of \(botCount + 1) racers")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if pos == 1 {
+                            Text("🏆 You won!")
+                                .font(.headline.bold())
+                                .foregroundStyle(.yellow)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .padding(.horizontal, 32)
+                } else {
+                    VStack(spacing: 6) {
+                        Text(settings.player1Name)
+                            .foregroundStyle(Theme.p1)
+                            .font(.headline).bold()
+                        Text("\(coordinator.p1Score)")
+                            .font(.system(size: 56, weight: .black, design: .rounded).monospacedDigit())
+                        Text("points")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 32)
+                }
+            } else {
+                HStack {
+                    VStack {
+                        Text(settings.player1Name)
+                            .foregroundStyle(Theme.p1)
+                            .font(.headline).bold()
+                        Text("\(coordinator.p1Score)")
+                            .font(.title.monospacedDigit())
+                    }
+                    Spacer()
+                    VStack {
+                        Text(settings.player2Name)
+                            .foregroundStyle(Theme.p2)
+                            .font(.headline).bold()
+                        Text("\(coordinator.p2Score)")
+                            .font(.title.monospacedDigit())
+                    }
+                }
+                .padding(.horizontal, 32)
+            }
+
+            HStack(spacing: 12) {
+                Button("Play Again", action: playAgain)
+                    .buttonStyle(.borderedProminent)
+
+                Button("Go Home", role: .destructive, action: goHome)
+                    .buttonStyle(.bordered)
+            }
+            .padding(.top, 12)
         }
         .padding(24)
         .presentationDetents([.medium])
+        .onAppear {
+            if isSinglePlayer && !isEndlessMode && botCount > 0 {
+                if coordinator.playerFinishPosition == 1 {
+                    SettingsStore.shared.recordSoloRaceWin(at: botDifficulty)
+                }
+            }
+        }
+    }
+
+    private func positionEmoji(_ pos: Int) -> String {
+        switch pos {
+        case 1:  return "🥇"
+        case 2:  return "🥈"
+        case 3:  return "🥉"
+        default: return "🏁"
+        }
+    }
+
+    private func ordinalLabel(_ n: Int) -> String {
+        switch n {
+        case 1: return "1st"
+        case 2: return "2nd"
+        case 3: return "3rd"
+        default: return "\(n)th"
+        }
+    }
+}
+
+// MARK: - Endless HUD (lives + live distance)
+
+private struct EndlessHUD: View {
+    @ObservedObject var coordinator: GameCoordinator
+
+    var body: some View {
+        VStack {
+            HStack(alignment: .center) {
+                // Lives (hearts) — only show during active play or after crash
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Image(systemName: i < coordinator.endlessLives ? "heart.fill" : "heart")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(i < coordinator.endlessLives ? Color.red : Color.white.opacity(0.35))
+                    }
+                }
+
+                Spacer()
+
+                // Live distance counter
+                Text("\(coordinator.endlessDistance)m")
+                    .font(.system(size: 22, weight: .black, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.8), radius: 3, y: 1)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            Spacer()
+        }
     }
 }
 

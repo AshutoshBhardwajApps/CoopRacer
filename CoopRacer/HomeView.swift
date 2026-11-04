@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct HomeView: View {
+    @EnvironmentObject var settings: SettingsStore
     @State private var animateCars = false
-    @State private var showComingSoon = false
 
     var body: some View {
         NavigationStack {
@@ -50,10 +50,28 @@ struct HomeView: View {
 
                     // Buttons stack
                     VStack(spacing: 14) {
-                        Button {
-                            showComingSoon = true
+                        NavigationLink {
+                            ContentView(isSinglePlayer: true, isEndlessMode: true)
+                                .navigationBarBackButtonHidden(true)
                         } label: {
-                            MenuButtonLabel(title: "SINGLE PLAYER")
+                            MenuButtonLabel(
+                                title: "ENDLESS",
+                                accent: LinearGradient(
+                                    colors: [Color(red: 0.9, green: 0.5, blue: 0.05),
+                                             Color(red: 0.7, green: 0.2, blue: 0.05)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                subtitle: settings.endlessBestDistance > 0
+                                    ? "Best: \(settings.endlessBestDistance)m"
+                                    : "Survive as long as you can"
+                            )
+                        }
+
+                        NavigationLink {
+                            RaceSetupView()
+                        } label: {
+                            MenuButtonLabel(title: "SOLO RACE")
                         }
 
                         NavigationLink {
@@ -74,25 +92,22 @@ struct HomeView: View {
 
                     Spacer()
 
-                    // Big bottom "Event" button
-                    Button {
-                        showComingSoon = true
+                    NavigationLink {
+                        SettingsView()
                     } label: {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(.white.opacity(0.08))
-                            .overlay(
-                                Text("EVENT")
-                                    .font(.title3.bold())
-                                    .foregroundStyle(.white)
-                            )
-                            .frame(height: 72)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 20)
-                                    .stroke(.white.opacity(0.15), lineWidth: 1)
-                            )
+                        MenuButtonLabel(title: "SETTINGS")
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 20)
+                    .padding(.horizontal, 28)
+
+                    NavigationLink {
+                        HighScoresView()
+                    } label: {
+                        MenuButtonLabel(title: "HIGH SCORES")
+                    }
+                    .padding(.horizontal, 28)
+
+                    // ✅ EVENT button removed
+                    // (Nothing else needed here – layout still looks clean.)
                 }
             }
             .navigationBarHidden(true)
@@ -101,18 +116,17 @@ struct HomeView: View {
             // Let ContentView clear any navigation flags when we’re safely back home
             NotificationCenter.default.post(name: Notification.Name("CoopRacer.ResetNavFlag"), object: nil)
 
-            // Start/continue background track for menu
-            BGM.shared.play(volume: 0.24)
+            // Start/continue background track for menu, but only if enabled
+                if settings.musicEnabled {
+                    BGM.shared.play(volume: 0.24)
+                } else {
+                    BGM.shared.play(volume: 0.0)    // keep it running but silent
+                }
 
             // Gentle header car wiggle
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 animateCars = true
             }
-        }
-        .alert("Coming soon", isPresented: $showComingSoon) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("This mode isn’t available yet. Try Two Player!")
         }
     }
 }
@@ -124,17 +138,26 @@ private struct MenuButtonLabel: View {
         colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)],
         startPoint: .top, endPoint: .bottom
     )
+    var subtitle: String? = nil
 
     var body: some View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
             .fill(accent)
-            .frame(height: 56)
+            .frame(height: subtitle != nil ? 64 : 56)
             .overlay(
-                Text(title)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                VStack(spacing: 2) {
+                    Text(title)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    if let sub = subtitle {
+                        Text(sub)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.70))
+                            .lineLimit(1)
+                    }
+                }
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
