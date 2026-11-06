@@ -47,8 +47,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // it from didFinishLaunching is too early — iOS silently no-ops the
         // request and the dialog never shows (App Store review rejected
         // CoopHockey 1.3(14) for exactly this). Defer to didBecomeActive
-        // and add a small delay so the launch transition completes before the
-        // system alert tries to present.
+        // and add a delay so the launch transition completes before the
+        // system alert tries to present. 2.0s (was 0.4s) gives Game Center's
+        // own sign-in sheet room to appear first, so neither prompt races
+        // the other — a collision there was the most likely cause of the
+        // 1.3(11) App Store launch-crash rejection, which we could not
+        // reproduce locally.
         didBecomeActiveObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
@@ -70,10 +74,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             didBecomeActiveObserver = nil
         }
 
-        // 0.4s delay lets the launch transition finish; without it the alert
-        // can race with the first frame and either be dropped or appear
-        // before the app's UI is visible (which Apple also dislikes).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+        // 2.0s delay lets the launch transition and any Game Center sign-in
+        // sheet finish before UMP/ATT try to present. Prompts that collide
+        // can either be silently dropped by UIKit or trigger a presentation
+        // assertion — either way they are not worth racing to the screen.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             // UMP consent runs BEFORE ATT. In the EEA/UK/Switzerland a
             // Google-certified CMP has to gather GDPR consent or those users
             // can only ever be served non-personalised ads. Everywhere else
