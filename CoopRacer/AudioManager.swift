@@ -22,8 +22,8 @@ final class BGM {
 
         // Start fresh
         if player == nil {
-            guard let url = Bundle.main.url(forResource: "COOPbackground", withExtension: "mp3") else {
-                print("BGM: missing COOPbackground.mp3")
+            guard let url = Bundle.main.url(forResource: "COOPbackground", withExtension: "m4a") else {
+                print("BGM: missing COOPbackground.m4a")
                 return
             }
             do {

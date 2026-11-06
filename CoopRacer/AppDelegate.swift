@@ -17,7 +17,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
-            try session.setPreferredIOBufferDuration(0.005)
+            // setPreferredIOBufferDuration(0.005) was here. 5 ms is an
+            // instrument-grade latency target that forces tiny render blocks;
+            // on iPhone, where the fulfilled buffer can be ~1 ms, the audio
+            // graph starves between callbacks and the mix crackles. Ambient
+            // game music does not need low latency — let the system choose
+            // (~23 ms) and the crackle goes away.
             try session.setActive(true, options: [])
         } catch {
             print("Audio session error: \(error)")
