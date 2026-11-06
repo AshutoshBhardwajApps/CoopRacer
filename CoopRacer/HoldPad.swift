@@ -16,12 +16,13 @@ struct HoldPad: View {
                 .foregroundColor(.white)
                 .rotationEffect(.degrees(flipText ? 180 : 0))
         }
+        .frame(maxWidth: .infinity, minHeight: 56, maxHeight: 56)
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in if !isPressed { isPressed = true } }
-                .onEnded { _ in isPressed = false }
+        .onLongPressGesture(
+            minimumDuration: .infinity,
+            maximumDistance: .infinity,
+            pressing: { isPressed = $0 },
+            perform: {}
         )
-        .frame(height: 56)
     }
 }
